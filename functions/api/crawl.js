@@ -23,10 +23,10 @@ export async function onRequestGet(context) {
     return json({ error: 'only http/https allowed' }, 400);
   }
 
-  const scopeDomain = scopeParam || start.hostname.toLowerCase();
+  const scopeDomain = (scopeParam || start.hostname).toLowerCase().replace(/^www\./, '');
   const inScope = (hostname) => {
     hostname = hostname.toLowerCase();
-    return hostname === scopeDomain || hostname.endsWith('.' + scopeDomain);
+    return hostname === scopeDomain || hostname.endsWith('.' + scopeDomain) || hostname === 'www.' + scopeDomain;
   };
 
   const encoder = new TextEncoder();
@@ -41,26 +41,18 @@ export async function onRequestGet(context) {
 
       const visited = new Set();
       const seenFiles = new Set();
-      const seenHosts = new Set();
       const normalize = (u) => {
         try { const n = new URL(u); n.hash = ''; return n.href; }
         catch { return u; }
       };
-      const noteHost = (hostname) => {
-        hostname = hostname.toLowerCase();
-        if (seenHosts.has(hostname)) return;
-        seenHosts.add(hostname);
-        send({ type: 'host', host: hostname });
-      };
 
-      const queue = [{ url: start.href, depth: 0 }];
+      // Track source and depth now
+      const queue = [{ url: start.href, depth: 0, source: null }];
       visited.add(normalize(start.href));
 
       let pagesAttempted = 0;
       let fileCount = 0;
       let failed = 0;
-
-      noteHost(start.hostname);
 
       try {
         while (queue.length > 0 && pagesAttempted < maxPages) {
@@ -82,7 +74,7 @@ export async function onRequestGet(context) {
             if (res.status !== 'fulfilled') {
               failed++;
               const reason = res.reason && res.reason.message ? res.reason.message : 'fetch failed';
-              send({ type: 'page', url: item.url, status: 'fail', reason: reason });
+              send({ type: 'page', url: item.url, source: item.source, depth: item.depth, status: 'fail', reason: reason });
               continue;
             }
 
@@ -91,18 +83,18 @@ export async function onRequestGet(context) {
               links = await extractLinks(res.value, item.url);
             } catch (e) {
               failed++;
-              send({ type: 'page', url: item.url, status: 'fail', reason: 'parse error' });
+              send({ type: 'page', url: item.url, source: item.source, depth: item.depth, status: 'fail', reason: 'parse error' });
               continue;
             }
 
-            send({ type: 'page', url: item.url, status: 'ok', links: links.length });
+            // Send success event with source and depth
+            send({ type: 'page', url: item.url, source: item.source, depth: item.depth, status: 'ok', links: links.length });
 
             for (const abs of links) {
               if (AUDIO_EXT.test(abs.pathname)) {
                 if (!seenFiles.has(abs.href)) {
                   seenFiles.add(abs.href);
                   fileCount++;
-                  noteHost(abs.hostname);
                   send({
                     type: 'file',
                     file: {
@@ -120,8 +112,8 @@ export async function onRequestGet(context) {
                 const key = normalize(abs.href);
                 if (visited.has(key)) continue;
                 visited.add(key);
-                noteHost(abs.hostname);
-                queue.push({ url: abs.href, depth: item.depth + 1 });
+                // Push to queue with the current page as the source
+                queue.push({ url: abs.href, depth: item.depth + 1, source: item.url });
               }
             }
           }
@@ -135,7 +127,7 @@ export async function onRequestGet(context) {
         if (!closed) { try { controller.close(); } catch (_) {} }
       }
     },
-    cancel() { /* client disconnected */ }
+    cancel() { }
   });
 
   return new Response(stream, {
