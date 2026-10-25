@@ -45,6 +45,21 @@
   }
   #filter:focus{ border-color:var(--line); }
 
+  #tabs{ display:flex; border-bottom:1px solid var(--line); background:#fff; }
+  #tabs button{
+    flex:0 0 auto;
+    border:0; border-right:1px solid var(--soft);
+    border-bottom:2px solid transparent;
+    background:transparent; color:var(--muted);
+    font:inherit; font-size:11px; letter-spacing:2px; text-transform:uppercase;
+    padding:10px 18px; cursor:pointer;
+  }
+  #tabs button:hover{ background:var(--hover); color:var(--fg); }
+  #tabs button.active{ color:var(--fg); border-bottom-color:var(--accent); font-weight:700; }
+
+  .panel{ display:none; }
+  .panel.active{ display:block; }
+
   table{ width:100%; border-collapse:collapse; }
   th,td{ text-align:left; padding:6px 12px; border-bottom:1px solid #eee; vertical-align:top; }
   th{
@@ -65,6 +80,33 @@
   }
   button.mini:hover{ background:var(--fg); color:#fff; }
   button.mini.alt:hover{ background:var(--accent); border-color:var(--accent); color:#fff; }
+
+  #logs{
+    padding:10px 16px;
+    font-size:12px;
+    line-height:1.55;
+    height:calc(100vh - 240px);
+    min-height:300px;
+    overflow-y:auto;
+    background:#fafafa;
+    border-bottom:1px solid var(--soft);
+  }
+  .log{ padding:2px 0; white-space:pre-wrap; word-break:break-word; }
+  .log-ok    { color:#0a7a3a; }
+  .log-fail  { color:#b3261e; }
+  .log-file  { color:var(--fg); }
+  .log-info  { color:var(--muted); }
+  .log-time  { color:#aaa; margin-right:8px; }
+
+  #panel-map{ padding:16px; }
+  #map{
+    display:block;
+    width:100%;
+    height:calc(100vh - 240px);
+    min-height:400px;
+    background:#fafafa;
+    border:1px solid var(--soft);
+  }
 
   #player{
     position:fixed; left:0; right:0; bottom:0; display:flex; align-items:center; gap:12px;
@@ -102,12 +144,28 @@
   <input id="filter" placeholder="filter…" spellcheck="false" autocomplete="off">
 </div>
 
-<table>
-  <thead>
-    <tr><th>host</th><th>file</th><th>found on</th><th></th></tr>
-  </thead>
-  <tbody id="tbody"></tbody>
-</table>
+<nav id="tabs">
+  <button type="button" data-tab="output" class="active">output</button>
+  <button type="button" data-tab="logs">logs</button>
+  <button type="button" data-tab="map">map</button>
+</nav>
+
+<section id="panel-output" class="panel active">
+  <table>
+    <thead>
+      <tr><th>host</th><th>file</th><th>found on</th><th></th></tr>
+    </thead>
+    <tbody id="tbody"></tbody>
+  </table>
+</section>
+
+<section id="panel-logs" class="panel">
+  <div id="logs"></div>
+</section>
+
+<section id="panel-map" class="panel">
+  <svg id="map" xmlns="http://www.w3.org/2000/svg"></svg>
+</section>
 
 <footer id="player" hidden>
   <span id="nowplaying">—</span>
@@ -124,10 +182,21 @@
         pagesIn = $('#pages'), depthIn = $('#depth'),
         goBtn = $('#go'), stopBtn = $('#stop'), statusEl = $('#status'),
         tbody = $('#tbody'), player = $('#player'), audio = $('#audio'),
-        nowPlaying = $('#nowplaying'), filterIn = $('#filter');
+        nowPlaying = $('#nowplaying'), filterIn = $('#filter'),
+        tabsNav = $('#tabs'), logsEl = $('#logs'), mapSvg = $('#map');
+
+  const panels = {
+    output: $('#panel-output'),
+    logs:   $('#panel-logs'),
+    map:    $('#panel-map')
+  };
 
   let abortController = null;
   let finished = false, pageCount = 0, fileCount = 0, errCount = 0, rowCount = 0;
+
+  let originHost = '';
+  const hosts = new Map();          // host -> 'origin' | 'sub' | 'cdn'
+  const fileCountByHost = new Map();
 
   form.addEventListener('submit', function (e) { e.preventDefault(); begin(); });
   stopBtn.addEventListener('click', function () { stop('stopped'); });
@@ -138,14 +207,71 @@
     document.querySelectorAll('tr.playing').forEach(function (r) { r.classList.remove('playing'); });
   });
 
+  tabsNav.addEventListener('click', function (e) {
+    const btn = e.target.closest('button[data-tab]');
+    if (!btn) return;
+    const tab = btn.dataset.tab;
+    tabsNav.querySelectorAll('button').forEach(function (b) { b.classList.toggle('active', b === btn); });
+    Object.keys(panels).forEach(function (k) { panels[k].classList.toggle('active', k === tab); });
+    if (tab === 'map') drawMap();
+    if (tab === 'logs') logsEl.scrollTop = logsEl.scrollHeight;
+  });
+
+  window.addEventListener('resize', function () {
+    if (panels.map.classList.contains('active')) drawMap();
+  });
+
   function setStatus(t) { statusEl.textContent = t; }
+
+  function addLog(kind, msg) {
+    const line = document.createElement('div');
+    line.className = 'log log-' + kind;
+    const t = document.createElement('span');
+    t.className = 'log-time';
+    t.textContent = new Date().toLocaleTimeString();
+    line.appendChild(t);
+    line.appendChild(document.createTextNode(msg));
+    logsEl.appendChild(line);
+    const nearBottom = logsEl.scrollTop + logsEl.clientHeight >= logsEl.scrollHeight - 60;
+    if (nearBottom) logsEl.scrollTop = logsEl.scrollHeight;
+  }
+
+  function classifyHost(host) {
+    if (!originHost) return 'cdn';
+    if (host === originHost) return 'origin';
+    if (host.endsWith('.' + originHost)) return 'sub';
+    return 'cdn';
+  }
+
+  function addHost(host) {
+    if (!host) return;
+    host = host.toLowerCase();
+    if (hosts.has(host)) return;
+    hosts.set(host, classifyHost(host));
+    if (panels.map.classList.contains('active')) drawMap();
+  }
+
+  function bumpFileCount(host) {
+    host = host.toLowerCase();
+    fileCountByHost.set(host, (fileCountByHost.get(host) || 0) + 1);
+  }
 
   function begin() {
     stop('');
     finished = false; pageCount = 0; fileCount = 0; errCount = 0; rowCount = 0;
     tbody.textContent = '';
+    logsEl.textContent = '';
     player.hidden = true;
     audio.pause(); audio.removeAttribute('src');
+
+    originHost = '';
+    hosts.clear();
+    fileCountByHost.clear();
+    try { originHost = new URL(urlIn.value.trim()).hostname.toLowerCase(); } catch (_) {}
+    if (originHost) {
+      hosts.set(originHost, 'origin');
+    }
+    if (panels.map.classList.contains('active')) drawMap();
 
     const params = new URLSearchParams({
       url: urlIn.value.trim(),
@@ -157,6 +283,9 @@
     setStatus('connecting…');
     goBtn.disabled = true;
     stopBtn.disabled = false;
+
+    addLog('info', 'starting crawl: ' + urlIn.value.trim());
+    if (originHost) addLog('info', 'origin host: ' + originHost);
 
     abortController = new AbortController();
     runCrawl(params, abortController.signal);
@@ -187,10 +316,15 @@
     } catch (err) {
       if (err.name !== 'AbortError') {
         stop('connection lost');
+        addLog('fail', 'connection lost: ' + String(err.message || err));
         return;
       }
     }
     stop('');
+    if (!finished) {
+      setStatus('stream ended');
+      addLog('info', 'stream ended without done event');
+    }
   }
 
   function stop(msg) {
@@ -206,15 +340,29 @@
 
     if (m.type === 'page') {
       pageCount++;
+      if (m.status === 'ok') {
+        addLog('ok', 'ok    ' + m.url + (m.links != null ? '   (' + m.links + ' links)' : ''));
+      } else {
+        errCount++;
+        addLog('fail', 'fail  ' + m.url + '   — ' + (m.reason || 'unknown'));
+      }
       setStatus('scanning — ' + pageCount + ' pages · ' + fileCount + ' files');
     } else if (m.type === 'file') {
+      bumpFileCount(m.file.host);
+      addHost(m.file.host);
       addRow(m.file);
+      addLog('file', 'file  ' + m.file.host + ' / ' + m.file.name + '   ← ' + m.file.page);
+    } else if (m.type === 'host') {
+      addHost(m.host);
+      addLog('info', 'host  ' + m.host);
     } else if (m.type === 'error') {
       errCount++;
+      addLog('fail', 'error — ' + (m.message || 'unknown'));
     } else if (m.type === 'done') {
       finished = true;
       const s = m.stats || { pages: pageCount, files: fileCount, failed: errCount };
       setStatus('done — ' + s.pages + ' pages · ' + s.files + ' files · ' + s.failed + ' errors');
+      addLog('info', 'done  — ' + s.pages + ' pages · ' + s.files + ' files · ' + s.failed + ' errors');
       stop('');
       if (s.files === 0) {
         const tr = document.createElement('tr');
@@ -298,6 +446,115 @@
     const q = filterIn.value.trim().toLowerCase();
     if (!q || !tr.dataset.search) { tr.style.display = ''; return; }
     tr.style.display = tr.dataset.search.indexOf(q) === -1 ? 'none' : '';
+  }
+
+  // ---------------- map ----------------
+
+  function placeRing(items, radius, cx, cy) {
+    const n = items.length;
+    if (n === 0) return [];
+    return items.map(function (host, i) {
+      const angle = (i / n) * Math.PI * 2 - Math.PI / 2;
+      return {
+        host: host,
+        x: cx + Math.cos(angle) * radius,
+        y: cy + Math.sin(angle) * radius
+      };
+    });
+  }
+
+  function drawMap() {
+    const rect = mapSvg.getBoundingClientRect();
+    if (rect.width === 0) return;
+    const W = rect.width, H = rect.height;
+    mapSvg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+    mapSvg.innerHTML = '';
+
+    const NS = 'http://www.w3.org/2000/svg';
+    function make(name, attrs) {
+      const el = document.createElementNS(NS, name);
+      for (const k in attrs) el.setAttribute(k, attrs[k]);
+      return el;
+    }
+
+    const cx = W / 2, cy = H / 2;
+
+    if (!originHost) {
+      const t = make('text', {
+        x: cx, y: cy, 'text-anchor': 'middle',
+        'font-family': 'ui-monospace, monospace',
+        'font-size': 12, fill: '#767676'
+      });
+      t.textContent = 'start a crawl to see the map';
+      mapSvg.appendChild(t);
+      return;
+    }
+
+    const subs = [];
+    const cdns = [];
+    hosts.forEach(function (kind, host) {
+      if (kind === 'sub') subs.push(host);
+      else if (kind === 'cdn') cdns.push(host);
+    });
+
+    const maxR = Math.min(W, H) / 2 - 40;
+    const rSub = Math.min(maxR * 0.55, 180);
+    const rCdn = Math.min(maxR * 0.85, 280);
+
+    const subNodes = placeRing(subs, rSub, cx, cy);
+    const cdnNodes = placeRing(cdns, rCdn, cx, cy);
+
+    subNodes.forEach(function (n) {
+      mapSvg.appendChild(make('line', {
+        x1: cx, y1: cy, x2: n.x, y2: n.y,
+        stroke: '#111', 'stroke-width': 1
+      }));
+    });
+    cdnNodes.forEach(function (n) {
+      mapSvg.appendChild(make('line', {
+        x1: cx, y1: cy, x2: n.x, y2: n.y,
+        stroke: '#ccc', 'stroke-width': 1, 'stroke-dasharray': '3 3'
+      }));
+    });
+
+    mapSvg.appendChild(make('circle', { cx: cx, cy: cy, r: 12, fill: '#ff3b00' }));
+    const originLabel = make('text', {
+      x: cx, y: cy + 30, 'text-anchor': 'middle',
+      'font-family': 'ui-monospace, monospace',
+      'font-size': 12, 'font-weight': 700, fill: '#111'
+    });
+    originLabel.textContent = originHost;
+    mapSvg.appendChild(originLabel);
+
+    subNodes.forEach(function (n) {
+      const count = fileCountByHost.get(n.host) || 0;
+      const r = 6 + Math.min(6, count);
+      mapSvg.appendChild(make('circle', {
+        cx: n.x, cy: n.y, r: r, fill: '#fff', stroke: '#111', 'stroke-width': 2
+      }));
+      const t = make('text', {
+        x: n.x, y: n.y + 24, 'text-anchor': 'middle',
+        'font-family': 'ui-monospace, monospace',
+        'font-size': 11, fill: '#111'
+      });
+      t.textContent = count ? (n.host + ' · ' + count) : n.host;
+      mapSvg.appendChild(t);
+    });
+
+    cdnNodes.forEach(function (n) {
+      const count = fileCountByHost.get(n.host) || 0;
+      const r = 5 + Math.min(5, count);
+      mapSvg.appendChild(make('circle', {
+        cx: n.x, cy: n.y, r: r, fill: '#fff', stroke: '#bbb', 'stroke-width': 2
+      }));
+      const t = make('text', {
+        x: n.x, y: n.y + 22, 'text-anchor': 'middle',
+        'font-family': 'ui-monospace, monospace',
+        'font-size': 10, fill: '#767676'
+      });
+      t.textContent = count ? (n.host + ' · ' + count) : n.host;
+      mapSvg.appendChild(t);
+    });
   }
 })();
 </script>
