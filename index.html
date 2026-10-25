@@ -4,8 +4,6 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>audiocrawler</title>
-<!-- Cosmos WebGL Graph Library -->
-<script src="https://cdn.jsdelivr.net/npm/@cosmograph/cosmos@latest/dist/index.min.js"></script>
 <style>
   :root{
     --fg:#111; --bg:#fff; --line:#111; --soft:#d9d9d9;
@@ -29,7 +27,7 @@
   }
   form input[type=text]:focus, form input[type=url]:focus{ background:#fafafa; box-shadow:inset 0 -2px 0 var(--accent); }
   form input[type=number]{ flex:0 0 90px; text-align:center; border:0; border-right:1px solid var(--soft); padding:10px 12px; font:inherit; background:transparent; outline:none; }
-  
+
   .form-btn-group { display:flex; flex-direction:column; border-left:1px solid var(--line); }
   form button{
     border:0; background:var(--fg); color:#fff;
@@ -51,7 +49,7 @@
     background:transparent; outline:none; width:220px;
   }
   #filter:focus{ border-color:var(--line); }
-  
+
   .auto-cont { display:flex; align-items:center; gap:6px; font-size:11px; color:var(--muted); cursor:pointer; user-select:none; }
   .auto-cont input { margin:0; cursor:pointer; }
 
@@ -111,9 +109,8 @@
   /* ---------------- map ---------------- */
   #panel-map{ padding:16px; position:relative; }
   #map-wrap{ position:relative; }
-  
-  /* Changed from SVG to Canvas container */
-  #map{
+
+  #cosmos-map{
     display:block;
     width:100%;
     height:calc(100dvh - 240px);
@@ -122,23 +119,51 @@
     border:1px solid var(--soft);
     overflow:hidden;
     touch-action:none;
+    user-select:none;
+    -webkit-user-select:none;
+    position:relative;
   }
+  #cosmos-map canvas{ display:block; }
 
   .map-ctrl {
-    position:absolute; top:16px; right:16px; z-index:10;
+    position:absolute; top:16px; right:16px; z-index:20;
     display:flex; gap:8px;
-    pointer-events: none; /* Let clicks pass through to canvas */
   }
   .map-ctrl button {
-    pointer-events: auto;
     border:1px solid var(--line); background:#fff; color:var(--fg);
     font:inherit; font-size:11px; padding:6px 10px; letter-spacing:1px; text-transform:uppercase;
     cursor:pointer; box-shadow:2px 2px 0 rgba(0,0,0,0.05);
   }
   .map-ctrl button:hover { background:var(--fg); color:#fff; }
 
+  #map-legend{
+    position:absolute; top:16px; left:16px; z-index:15;
+    padding:10px 12px;
+    background:rgba(255,255,255,0.92);
+    border:1px solid var(--line);
+    font-size:11px; line-height:1.7;
+    pointer-events:none; user-select:none;
+  }
+  #map-legend .lg-row{ display:flex; align-items:center; gap:8px; }
+  #map-legend .lg-dot{
+    display:inline-block; width:9px; height:9px; border-radius:50%;
+    flex:0 0 auto; background:#fff; border:1px solid #bbb;
+  }
+  #map-legend .lg-dot.start{ background:#ff3b00; border-color:#ff3b00; }
+  #map-legend .lg-dot.crawled{ background:#fff; border-color:#bbb; }
+  #map-legend .lg-dot.audio{ background:#fff2ee; border-color:#ff3b00; border-width:2px; }
+  #map-legend .lg-hint{ margin-top:6px; color:#aaa; font-size:10px; }
+
+  .map-overlay{
+    position:absolute; inset:0; z-index:2;
+    display:flex; align-items:center; justify-content:center;
+    color:var(--muted); font-size:13px;
+    pointer-events:none; user-select:none;
+  }
+  .map-overlay[hidden]{ display:none; }
+
   #node-popup{
-    position:absolute; z-index:10;
+    position:absolute; z-index:20;
     width:238px; max-height:280px;
     display:flex; flex-direction:column;
     background:#fff; border:1px solid var(--line);
@@ -236,8 +261,14 @@
     <div class="map-ctrl">
       <button id="btn-fit" type="button">Fit</button>
     </div>
-    <!-- Replaced SVG with a container for Cosmos -->
-    <div id="map"></div>
+    <div id="cosmos-map"></div>
+    <div id="map-legend">
+      <div class="lg-row"><span class="lg-dot start"></span>Start Page</div>
+      <div class="lg-row"><span class="lg-dot crawled"></span>Crawled Page</div>
+      <div class="lg-row"><span class="lg-dot audio"></span>Page with Audio</div>
+      <div class="lg-hint">drag · scroll / pinch · click node</div>
+    </div>
+    <div id="map-empty" class="map-overlay">start a crawl to see the map</div>
     <div id="node-popup" hidden></div>
   </div>
 </section>
@@ -247,6 +278,9 @@
   <audio id="audio" controls preload="none"></audio>
   <button id="closePlayer" type="button">×</button>
 </footer>
+
+<!-- Cosmograph WebGL graph engine -->
+<script src="https://cdn.jsdelivr.net/npm/@cosmograph/cosmos@latest/dist/index.min.js"></script>
 
 <script>
 (function () {
@@ -259,10 +293,9 @@
         autoContinueCb = $('#autoContinue'), statusEl = $('#status'),
         tbody = $('#tbody'), player = $('#player'), audio = $('#audio'),
         nowPlaying = $('#nowplaying'), filterIn = $('#filter'),
-        tabsNav = $('#tabs'), logsEl = $('#logs'), 
-        mapContainer = $('#map'),
+        tabsNav = $('#tabs'), logsEl = $('#logs'),
         mapWrap = $('#map-wrap'), popupEl = $('#node-popup'),
-        fitBtn = $('#btn-fit');
+        fitBtn = $('#btn-fit'), mapEmptyEl = $('#map-empty');
 
   const panels = {
     output: $('#panel-output'),
@@ -279,18 +312,11 @@
   let pendingResume = null;
   let lockedParams = null;
 
-  // Map State
-  let cosmosInstance = null;
-  let nodeIndexMap = new Map(); // Maps URL -> index in Cosmos arrays
-  let linksArray = new Float32Array(0);
-  let selectedUrl = null;
-  let hoverUrl = null;
-
   form.addEventListener('submit', function (e) { e.preventDefault(); begin(); });
   stopBtn.addEventListener('click', function () { stop('stopped'); });
   continueBtn.addEventListener('click', continueCrawl);
   filterIn.addEventListener('input', applyFilter);
-  fitBtn.addEventListener('click', () => { if (cosmosInstance) cosmosInstance.fitView(); });
+  fitBtn.addEventListener('click', fitView);
 
   $('#closePlayer').addEventListener('click', function () {
     audio.pause(); audio.removeAttribute('src'); audio.load();
@@ -305,13 +331,18 @@
     tabsNav.querySelectorAll('button').forEach(function (b) { b.classList.toggle('active', b === btn); });
     Object.keys(panels).forEach(function (k) { panels[k].classList.toggle('active', k === tab); });
     if (tab === 'map') {
-      requestAnimationFrame(() => { 
-        initCosmos(); // Ensure initialized
-        updateCosmosData(); 
-        if (cosmosInstance) cosmosInstance.fitView();
+      requestAnimationFrame(function () {
+        drawMap();
+        setTimeout(fitView, 60);
       });
     }
     if (tab === 'logs') logsEl.scrollTop = logsEl.scrollHeight;
+  });
+
+  window.addEventListener('resize', function () {
+    if (cosmosGraph && cosmosGraph.resize && panels.map.classList.contains('active')) {
+      try { cosmosGraph.resize(); } catch (_) {}
+    }
   });
 
   function setStatus(t) { statusEl.textContent = t; }
@@ -340,18 +371,16 @@
     audio.pause(); audio.removeAttribute('src');
 
     pageNodes.clear();
-    nodeIndexMap.clear();
     selectedUrl = null;
-    hoverUrl = null;
-    
-    if (cosmosInstance) {
-      cosmosInstance.setPointPositions(new Float32Array(0));
-      cosmosInstance.setLinks(new Float32Array(0));
-    }
     popupEl.hidden = true;
+    lastDrawnNodeCount = -1;
+    lastDrawnFileCount = -1;
 
     continueBtn.disabled = true;
     continueBtn.textContent = 'continue +1 worker';
+
+    if (panels.map.classList.contains('active')) requestAnimationFrame(drawMap);
+    else scheduleDraw();
 
     addLog('info', 'starting crawl: ' + urlIn.value.trim());
     startCrawl(null);
@@ -463,7 +492,7 @@
             files: []
           });
         } catch (_) {}
-        if (panels.map.classList.contains('active')) requestAnimationFrame(updateCosmosData);
+        if (panels.map.classList.contains('active')) scheduleDraw();
       } else {
         errCount++;
         addLog('fail', 'fail  ' + m.url + '   — ' + (m.reason || 'unknown'));
@@ -472,7 +501,7 @@
     } else if (m.type === 'file') {
       if (pageNodes.has(m.file.page)) {
         pageNodes.get(m.file.page).files.push(m.file);
-        if (panels.map.classList.contains('active')) requestAnimationFrame(updateCosmosData);
+        if (panels.map.classList.contains('active')) scheduleDraw();
       }
       addRow(m.file);
       addLog('file', 'file  ' + m.file.host + ' / ' + m.file.name + '   ← ' + m.file.page);
@@ -493,7 +522,7 @@
         continueBtn.disabled = false;
         continueBtn.textContent = 'continue +1 worker (' + m.resume.queue.length + ' queued)';
         addLog('info', m.resume.queue.length + ' URLs still queued — click continue to spin up a new worker');
-        
+
         if (autoContinueCb.checked) {
           addLog('info', 'auto-continue triggered…');
           setTimeout(continueCrawl, 1000);
@@ -512,9 +541,10 @@
         td.textContent = 'no audio files found (try raising depth / max pages, or set a scope domain)';
         tr.appendChild(td); tbody.appendChild(tr);
       }
-      
+
       if (panels.map.classList.contains('active')) {
-        requestAnimationFrame(() => { updateCosmosData(); if (cosmosInstance) cosmosInstance.fitView(); });
+        drawMap();
+        setTimeout(fitView, 120);
       }
     }
   }
@@ -599,209 +629,195 @@
     tr.style.display = tr.dataset.search.indexOf(q) === -1 ? 'none' : '';
   }
 
-  // ---------------- map (Cosmos WebGL) ----------------
+  // ==========================================================================
+  // MAP  —  Cosmograph (WebGL)
+  // ==========================================================================
+
+  let cosmosGraph = null;
+  let nodeUrls = [];
+  let selectedUrl = null;
+  let lastPointerX = 0, lastPointerY = 0;
+  let drawScheduled = false;
+  let lastDrawnNodeCount = -1;
+  let lastDrawnFileCount = -1;
+
+  // track pointer for popup positioning (Cosmograph's onClick doesn't give us coords)
+  mapWrap.addEventListener('pointerdown', function (e) {
+    lastPointerX = e.clientX;
+    lastPointerY = e.clientY;
+  }, true);
 
   function initCosmos() {
-    if (cosmosInstance) return;
-    if (!window.Cosmos) {
-      console.error("Cosmos library not loaded.");
-      return;
+    if (cosmosGraph) return true;
+    const container = document.getElementById('cosmos-map');
+    if (!container) return false;
+
+    if (typeof Cosmos === 'undefined' || !Cosmos.Graph) {
+      console.error('Cosmograph library not loaded');
+      container.innerHTML =
+        '<div style="padding:24px;color:#767676;font-family:inherit">' +
+        'Map library failed to load. Check your network and refresh.' +
+        '</div>';
+      return false;
     }
 
-    const config = {
-      backgroundColor: '#fafafa',
-      spaceSize: 4096,
-      nodeSize: 10, 
-      nodeColor: '#767676',
-      linkWidth: 1.5,
-      linkColor: '#d9d9d9',
-      
-      // Prevent bunching: Higher repulsion, defined link distance
-      simulationFriction: 0.15,      
-      simulationRepulsion: 2.5,       
-      simulationLinkSpring: 0.6,     
-      simulationLinkDistance: 40,    
-      simulationGravity: 0.15,       
-
-      fitViewOnInit: true,
-      enableSimulation: true,
-      
-      onPointMouseOver: (index) => {
-        if (index === undefined) {
-          hoverUrl = null;
-        } else {
-          const nodeArray = Array.from(pageNodes.values());
-          hoverUrl = nodeArray[index].url;
-        }
-        updateHighlight();
-      },
-      
-      onPointClick: (index, event) => {
-        if (index === undefined) {
-          selectNode(null);
-          return;
-        }
-        const nodeArray = Array.from(pageNodes.values());
-        const node = nodeArray[index];
-        selectNode(node.url);
-        
-        // Position popup using the click event coordinates relative to map container
-        const rect = mapWrap.getBoundingClientRect();
-        const clientX = event.clientX || event.touches?.[0]?.clientX || 0;
-        const clientY = event.clientY || event.touches?.[0]?.clientY || 0;
-        
-        let left = clientX - rect.left + 14;
-        let top = clientY - rect.top - popupEl.offsetHeight / 2;
-        
-        const W = mapWrap.clientWidth;
-        const pw = popupEl.offsetWidth;
-        if (left + pw > W - 6) left = clientX - rect.left - pw - 14;
-        
-        popupEl.style.left = Math.max(6, left) + 'px';
-        popupEl.style.top = Math.max(6, top) + 'px';
-      }
-    };
-
-    cosmosInstance = new window.Cosmos(mapContainer, config);
+    try {
+      cosmosGraph = new Cosmos.Graph(container, {
+        nodeSize: 5,
+        nodeColor: function (index) {
+          const url = nodeUrls[index];
+          const node = pageNodes.get(url);
+          if (!node) return '#bbbbbb';
+          if (node.depth === 0) return '#ff3b00';
+          if (node.files.length > 0) return '#ff3b00';
+          return '#bbbbbb';
+        },
+        nodeStrokeWidth: 1.5,
+        nodeStrokeColor: '#ffffff',
+        linkWidth: 0.8,
+        linkColor: '#d9d9d9',
+        backgroundColor: '#fafafa',
+        showLabels: true,
+        labelSize: 10,
+        labelColor: '#111111',
+        // spacious layout — bigger repulsion + longer links so nodes don't clump
+        simulationGravity: 0.08,
+        simulationRepulsion: 1.4,
+        simulationLinkSpring: 0.7,
+        simulationLinkDistance: 40,
+        simulationFriction: 0.92,
+        spaceSize: 8192,
+        onClick: function (index) { handleNodeClick(index); }
+      });
+      return true;
+    } catch (err) {
+      console.error('Cosmograph init failed:', err);
+      container.innerHTML =
+        '<div style="padding:24px;color:#767676;font-family:inherit">' +
+        'Map init failed: ' + String(err.message || err) +
+        '</div>';
+      return false;
+    }
   }
 
-  function updateCosmosData() {
-    initCosmos();
-    if (!cosmosInstance) return;
+  function handleNodeClick(index) {
+    const url = nodeUrls[index];
+    if (!url) return;
+    if (selectedUrl === url) {
+      selectedUrl = null;
+      popupEl.hidden = true;
+    } else {
+      selectedUrl = url;
+      showPopup(pageNodes.get(url), lastPointerX, lastPointerY);
+    }
+  }
+
+  function scheduleDraw() {
+    if (drawScheduled) return;
+    drawScheduled = true;
+    setTimeout(function () {
+      drawScheduled = false;
+      drawMap();
+    }, 250);
+  }
+
+  function fitView() {
+    if (cosmosGraph && typeof cosmosGraph.fitView === 'function') {
+      try { cosmosGraph.fitView(); } catch (_) {}
+    }
+  }
+
+  function drawMap() {
+    if (!panels.map.classList.contains('active')) return;
+    if (!initCosmos()) return;
 
     const nodes = Array.from(pageNodes.values());
+    const totalFiles = nodes.reduce(function (s, n) { return s + n.files.length; }, 0);
+
+    // skip expensive setData if nothing changed (e.g. tab switching)
+    if (nodes.length === lastDrawnNodeCount && totalFiles === lastDrawnFileCount) {
+      return;
+    }
+    lastDrawnNodeCount = nodes.length;
+    lastDrawnFileCount = totalFiles;
+
+    mapEmptyEl.hidden = nodes.length > 0;
+
     if (nodes.length === 0) {
-      cosmosInstance.setPointPositions(new Float32Array(0));
-      cosmosInstance.setLinks(new Float32Array(0));
+      try {
+        cosmosGraph.setData(
+          { x: new Float32Array(0), y: new Float32Array(0) },
+          { source: new Float32Array(0), target: new Float32Array(0) }
+        );
+      } catch (_) {}
       return;
     }
 
-    const points = new Float32Array(nodes.length * 2);
-    const sizes = new Float32Array(nodes.length);
-    const colors = new Float32Array(nodes.length * 4);
-    const linksList = [];
+    nodeUrls = nodes.map(function (n) { return n.url; });
+    const nodeIndex = new Map();
+    nodeUrls.forEach(function (url, i) { nodeIndex.set(url, i); });
 
-    nodeIndexMap.clear();
+    const N = nodes.length;
+    const xs = new Float32Array(N);
+    const ys = new Float32Array(N);
 
-    // Initial circular layout based on depth to give Cosmos a good start
-    nodes.forEach((n, i) => {
-      nodeIndexMap.set(n.url, i);
-      const angle = (i / nodes.length) * Math.PI * 2;
-      const radius = 50 + (n.depth || 0) * 40;
-      points[i * 2] = Math.cos(angle) * radius;
-      points[i * 2 + 1] = Math.sin(angle) * radius;
+    // seed initial positions in concentric rings by crawl depth — a much better
+    // starting point than all-at-origin, so nodes spread out immediately
+    let maxDepth = 0;
+    for (let i = 0; i < N; i++) if (nodes[i].depth > maxDepth) maxDepth = nodes[i].depth;
 
-      const isRoot = n.depth === 0;
-      const hasFiles = n.files.length > 0;
+    const rings = [];
+    for (let d = 0; d <= maxDepth; d++) rings.push([]);
+    for (let i = 0; i < N; i++) rings[nodes[i].depth].push(i);
 
-      sizes[i] = isRoot ? 16 : (hasFiles ? 10 : 6);
-      
-      // Base Colors (R, G, B, A)
-      if (isRoot) {
-        colors.set([1.0, 0.23, 0.0, 1.0], i * 4); // Accent Orange
-      } else if (hasFiles) {
-        colors.set([0.7, 0.15, 0.1, 1.0], i * 4); // Dark Red
-      } else {
-        colors.set([0.46, 0.46, 0.46, 1.0], i * 4); // Gray
-      }
-    });
-
-    // Build Links
-    nodes.forEach((n, i) => {
-      if (n.source && nodeIndexMap.has(n.source)) {
-        linksList.push(nodeIndexMap.get(n.source), i);
-      }
-    });
-
-    linksArray = new Float32Array(linksList);
-
-    cosmosInstance.setPointPositions(points);
-    cosmosInstance.setPointSizes(sizes);
-    cosmosInstance.setPointColors(colors);
-    cosmosInstance.setLinks(linksArray);
-
-    // Set default link colors
-    const linkColors = new Float32Array(linksArray.length * 4);
-    for (let i = 0; i < linksArray.length / 2; i++) {
-      linkColors.set([0.85, 0.85, 0.85, 1.0], i * 4);
-    }
-    cosmosInstance.setLinkColors(linkColors);
-
-    updateHighlight();
-    
-    // If we just loaded the first nodes, fit the view
-    if (nodes.length > 0 && !selectedUrl) {
-      setTimeout(() => { if (cosmosInstance) cosmosInstance.fitView(); }, 100);
-    }
-  }
-
-  function selectNode(url) {
-    selectedUrl = (url && pageNodes.has(url)) ? url : null;
-    updateHighlight();
-    if (selectedUrl) showPopup(pageNodes.get(selectedUrl));
-    else popupEl.hidden = true;
-  }
-
-  function updateHighlight() {
-    if (!cosmosInstance) return;
-    
-    const activeUrl = hoverUrl || selectedUrl;
-    const pathUrls = new Set();
-    
-    if (activeUrl) {
-      let cur = pageNodes.get(activeUrl), guard = 0;
-      while (cur && guard++ < 5000) {
-        pathUrls.add(cur.url);
-        cur = cur.source ? pageNodes.get(cur.source) : null;
-      }
-    }
-    const active = pathUrls.size > 0;
-
-    const nodes = Array.from(pageNodes.values());
-    const pointColors = new Float32Array(nodes.length * 4);
-    const linkColors = new Float32Array(linksArray.length * 4);
-
-    let linkIdx = 0;
-    nodes.forEach((n, i) => {
-      const inPath = pathUrls.has(n.url);
-      const isRoot = n.depth === 0;
-      const hasFiles = n.files.length > 0;
-      
-      // Update Node Colors
-      if (active && !inPath) {
-        // Dimmed
-        if (isRoot) pointColors.set([1.0, 0.23, 0.0, 0.15], i * 4);
-        else if (hasFiles) pointColors.set([0.7, 0.15, 0.1, 0.15], i * 4);
-        else pointColors.set([0.46, 0.46, 0.46, 0.15], i * 4);
-      } else {
-        // Normal or Highlighted
-        if (isRoot) pointColors.set([1.0, 0.23, 0.0, 1.0], i * 4);
-        else if (hasFiles) pointColors.set([0.7, 0.15, 0.1, 1.0], i * 4);
-        else pointColors.set([0.46, 0.46, 0.46, 1.0], i * 4);
-      }
-
-      // Update Link Colors
-      if (n.source && nodeIndexMap.has(n.source)) {
-        const sourceUrl = n.source;
-        const targetUrl = n.url;
-        const inPathLink = pathUrls.has(sourceUrl) && pathUrls.has(targetUrl);
-
-        if (active && !inPathLink) {
-          linkColors.set([0.85, 0.85, 0.85, 0.05], linkIdx * 4); // Very dim
-        } else if (inPathLink) {
-          linkColors.set([1.0, 0.23, 0.0, 1.0], linkIdx * 4); // Orange path
+    const RADIUS = 2048;
+    for (let d = 0; d < rings.length; d++) {
+      const ring = rings[d];
+      const count = ring.length;
+      for (let i = 0; i < count; i++) {
+        const idx = ring[i];
+        if (d === 0) {
+          xs[idx] = 0; ys[idx] = 0;
         } else {
-          linkColors.set([0.85, 0.85, 0.85, 1.0], linkIdx * 4); // Default
+          const angle = (i / count) * Math.PI * 2;
+          const r = RADIUS * (d / (maxDepth || 1));
+          xs[idx] = Math.cos(angle) * r;
+          ys[idx] = Math.sin(angle) * r;
         }
-        linkIdx++;
       }
+    }
+
+    // edges
+    const src = [];
+    const tgt = [];
+    for (let i = 0; i < N; i++) {
+      const n = nodes[i];
+      if (n.source) {
+        const si = nodeIndex.get(n.source);
+        if (si !== undefined) { src.push(si); tgt.push(i); }
+      }
+    }
+
+    const labels = nodes.map(function (n) {
+      if (n.depth === 0) return 'ORIGIN';
+      let l = n.path;
+      if (!l || l === '/') return n.host;
+      if (l.length > 16) l = l.substring(0, 14) + '…';
+      return l;
     });
 
-    cosmosInstance.setPointColors(pointColors);
-    cosmosInstance.setLinkColors(linkColors);
+    try {
+      cosmosGraph.setData(
+        { x: xs, y: ys, label: labels },
+        { source: new Float32Array(src), target: new Float32Array(tgt) }
+      );
+      if (typeof cosmosGraph.render === 'function') cosmosGraph.render();
+    } catch (err) {
+      console.error('Cosmograph setData failed:', err);
+    }
   }
 
-  function showPopup(node) {
+  function showPopup(node, px, py) {
     if (!node) { popupEl.hidden = true; return; }
     popupEl.textContent = '';
 
@@ -821,7 +837,10 @@
     close.className = 'np-close';
     close.textContent = '×';
     close.title = 'clear selection';
-    close.addEventListener('click', function () { selectNode(null); });
+    close.addEventListener('click', function () {
+      selectedUrl = null;
+      popupEl.hidden = true;
+    });
 
     head.appendChild(dot);
     head.appendChild(pathEl);
@@ -866,6 +885,25 @@
 
     popupEl.appendChild(list);
     popupEl.hidden = false;
+    positionPopup(px, py);
+  }
+
+  function positionPopup(px, py) {
+    const rect = mapWrap.getBoundingClientRect();
+    const pw = popupEl.offsetWidth;
+    const ph = popupEl.offsetHeight;
+    const W = rect.width;
+    const H = rect.height;
+
+    let left = px - rect.left + 14;
+    if (left + pw > W - 6) left = px - rect.left - pw - 14;
+    left = Math.max(6, Math.min(left, W - pw - 6));
+
+    let top = py - rect.top - ph / 2;
+    top = Math.max(6, Math.min(top, H - ph - 6));
+
+    popupEl.style.left = left + 'px';
+    popupEl.style.top = top + 'px';
   }
 })();
 </script>
