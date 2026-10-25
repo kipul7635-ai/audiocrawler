@@ -110,7 +110,7 @@
   #panel-map{ padding:16px; position:relative; }
   #map-wrap{ position:relative; }
 
-  #cosmos-map{
+  #graph{
     display:block;
     width:100%;
     height:calc(100dvh - 240px);
@@ -123,7 +123,6 @@
     -webkit-user-select:none;
     position:relative;
   }
-  #cosmos-map canvas{ display:block; }
 
   .map-ctrl {
     position:absolute; top:16px; right:16px; z-index:20;
@@ -261,7 +260,7 @@
     <div class="map-ctrl">
       <button id="btn-fit" type="button">Fit</button>
     </div>
-    <div id="cosmos-map"></div>
+    <div id="graph"></div>
     <div id="map-legend">
       <div class="lg-row"><span class="lg-dot start"></span>Start Page</div>
       <div class="lg-row"><span class="lg-dot crawled"></span>Crawled Page</div>
@@ -279,8 +278,8 @@
   <button id="closePlayer" type="button">×</button>
 </footer>
 
-<!-- Cosmograph WebGL graph engine (v2) -->
-<script src="https://cdn.jsdelivr.net/npm/@cosmograph/cosmos@2.0.0-beta.20/dist/index.min.js"></script>
+<!-- Force Graph Library (Canvas-based, highly stable on mobile) -->
+<script src="//unpkg.com/force-graph"></script>
 
 <script>
 (function () {
@@ -339,12 +338,6 @@
     if (tab === 'logs') logsEl.scrollTop = logsEl.scrollHeight;
   });
 
-  window.addEventListener('resize', function () {
-    if (cosmosGraph && cosmosGraph.resize && panels.map.classList.contains('active')) {
-      try { cosmosGraph.resize(); } catch (_) {}
-    }
-  });
-
   function setStatus(t) { statusEl.textContent = t; }
 
   function addLog(kind, msg) {
@@ -374,7 +367,7 @@
     selectedUrl = null;
     popupEl.hidden = true;
     lastDrawnNodeCount = -1;
-    lastDrawnFileCount = -1;
+    lastDrawnLinkCount = -1;
 
     continueBtn.disabled = true;
     continueBtn.textContent = 'continue +1 worker';
@@ -630,168 +623,109 @@
   }
 
   // ==========================================================================
-  // MAP  —  Cosmograph v2 (WebGL)
+  // MAP — Force Graph (Canvas, highly stable on mobile)
   // ==========================================================================
 
-  let cosmosGraph = null;
-  let nodeUrls = [];
+  let ForceGraph = null;
   let selectedUrl = null;
-  let lastPointerX = 0, lastPointerY = 0;
-  let drawScheduled = false;
+  let scheduleTimer = null;
   let lastDrawnNodeCount = -1;
-  let lastDrawnFileCount = -1;
+  let lastDrawnLinkCount = -1;
 
-  mapWrap.addEventListener('pointerdown', function (e) {
-    lastPointerX = e.clientX;
-    lastPointerY = e.clientY;
-  }, true);
-
-  function initCosmos() {
-    if (cosmosGraph) return true;
-    const container = document.getElementById('cosmos-map');
-    if (!container) return false;
-
-    if (typeof Cosmos === 'undefined' || !Cosmos.Graph) {
-      console.error('Cosmograph library not loaded');
-      container.innerHTML =
-        '<div style="padding:24px;color:#767676;font-family:inherit">' +
-        'Map library failed to load. Check your network and refresh.' +
-        '</div>';
+  function initGraph() {
+    if (ForceGraph) return true;
+    const container = document.getElementById('graph');
+    
+    if (typeof window.ForceGraph === 'undefined') {
+      console.error('ForceGraph library not loaded');
       return false;
     }
 
-    try {
-      cosmosGraph = new Cosmos.Graph(container, {
-        // --- Simulation parameters tuned for spreading out nodes ---
-        simulationGravity: 0.05,        // Reduced gravity to prevent collapse
-        simulationRepulsion: 1.8,       // Strong repulsion to push nodes apart
-        simulationLinkSpring: 0.4,      // Weaker link spring so links don't pull too hard
-        simulationLinkDistance: 60,     // Increased minimum link distance
-        simulationFriction: 0.92,
-        spaceSize: 8192,
-        backgroundColor: '#fafafa',
-        enableDrag: true,
-        rescalePositions: true,         // Helpful for initial layout
-        curvedLinks: false,             // Straight links are clearer
-        fitViewOnInit: true,
-        fitViewDelay: 1200,             // Wait for simulation to settle
-        fitViewPadding: 0.3,            // Padding around the graph
-        onClick: function (index) { handleNodeClick(index); }
+    ForceGraph = window.ForceGraph()(container)
+      .backgroundColor('#fafafa')
+      .nodeId('id')
+      .nodeVal(node => node.depth === 0 ? 12 : (node.files.length > 0 ? 6 : 3))
+      .nodeColor(node => {
+        if (node.depth === 0) return '#ff3b00'; // Start page
+        if (node.files.length > 0) return '#ff3b00'; // Has audio
+        return '#bbbbbb'; // Standard crawled page
+      })
+      .nodeLabel(node => {
+        let label = node.path === '/' ? 'ORIGIN' : node.path;
+        if (label.length > 20) label = label.substring(0, 18) + '...';
+        return `<div style="font-family:monospace; font-size:11px; padding:4px 8px; background:#fff; border:1px solid #111; color:#111;">${label}</div>`;
+      })
+      .linkColor(() => '#d9d9d9')
+      .linkWidth(1.2)
+      .d3AlphaDecay(0.02)
+      .d3VelocityDecay(0.3) // Controls friction (lower = stops faster)
+      .warmupTicks(100) // Pre-calculate layout so it doesn't jitter
+      .cooldownTicks(150) // Stops calculating after a bit to save battery
+      .onNodeClick((node, event) => {
+        if (selectedUrl === node.id) {
+          selectedUrl = null;
+          popupEl.hidden = true;
+        } else {
+          selectedUrl = node.id;
+          showPopup(node, event.clientX, event.clientY);
+        }
       });
-      return true;
-    } catch (err) {
-      console.error('Cosmograph init failed:', err);
-      container.innerHTML =
-        '<div style="padding:24px;color:#767676;font-family:inherit">' +
-        'Map init failed: ' + String(err.message || err) +
-        '</div>';
-      return false;
-    }
-  }
 
-  function handleNodeClick(index) {
-    const url = nodeUrls[index];
-    if (!url) return;
-    if (selectedUrl === url) {
-      selectedUrl = null;
-      popupEl.hidden = true;
-    } else {
-      selectedUrl = url;
-      showPopup(pageNodes.get(url), lastPointerX, lastPointerY);
-    }
+    window.addEventListener('resize', () => {
+      if (ForceGraph) ForceGraph.width(container.clientWidth).height(container.clientHeight);
+    });
+    
+    return true;
   }
 
   function scheduleDraw() {
-    if (drawScheduled) return;
-    drawScheduled = true;
-    setTimeout(function () {
-      drawScheduled = false;
+    if (scheduleTimer) return;
+    scheduleTimer = setTimeout(() => {
+      scheduleTimer = null;
       drawMap();
-    }, 250);
+    }, 300);
   }
 
   function fitView() {
-    if (cosmosGraph && typeof cosmosGraph.fitView === 'function') {
-      try { cosmosGraph.fitView(); } catch (_) {}
-    }
+    if (ForceGraph) ForceGraph.zoomToFit(400, 40);
   }
 
   function drawMap() {
     if (!panels.map.classList.contains('active')) return;
-    if (!initCosmos()) return;
+    if (!initGraph()) return;
 
-    const nodes = Array.from(pageNodes.values());
-    const totalFiles = nodes.reduce(function (s, n) { return s + n.files.length; }, 0);
-
-    if (nodes.length === lastDrawnNodeCount && totalFiles === lastDrawnFileCount) {
-      return;
-    }
-    lastDrawnNodeCount = nodes.length;
-    lastDrawnFileCount = totalFiles;
-
-    mapEmptyEl.hidden = nodes.length > 0;
-
-    if (nodes.length === 0) {
-      try {
-        cosmosGraph.setPointPositions(new Float32Array(0));
-        cosmosGraph.setLinks(new Float32Array(0));
-        cosmosGraph.render();
-      } catch (_) {}
-      return;
-    }
-
-    nodeUrls = nodes.map(function (n) { return n.url; });
-    const nodeIndex = new Map();
-    nodeUrls.forEach(function (url, i) { nodeIndex.set(url, i); });
-
-    const N = nodes.length;
-    const positions = new Float32Array(N * 2);
-
-    let maxDepth = 0;
-    for (let i = 0; i < N; i++) if (nodes[i].depth > maxDepth) maxDepth = nodes[i].depth;
-
-    const rings = [];
-    for (let d = 0; d <= maxDepth; d++) rings.push([]);
-    for (let i = 0; i < N; i++) rings[nodes[i].depth].push(i);
-
-    const RADIUS = 2048;
-    for (let d = 0; d < rings.length; d++) {
-      const ring = rings[d];
-      const count = ring.length;
-      for (let i = 0; i < count; i++) {
-        const idx = ring[i];
-        let x, y;
-        if (d === 0) {
-          x = 0; y = 0;
-        } else {
-          const angle = (i / count) * Math.PI * 2;
-          const r = RADIUS * (d / (maxDepth || 1));
-          x = Math.cos(angle) * r;
-          y = Math.sin(angle) * r;
-        }
-        positions[idx * 2] = x;
-        positions[idx * 2 + 1] = y;
-      }
-    }
-
+    const nodesMap = Array.from(pageNodes.values());
+    
+    // Build links array
     const links = [];
-    for (let i = 0; i < N; i++) {
-      const n = nodes[i];
-      if (n.source) {
-        const si = nodeIndex.get(n.source);
-        if (si !== undefined) {
-          links.push(si, i);
-        }
+    nodesMap.forEach(n => {
+      if (n.source && pageNodes.has(n.source)) {
+        links.push({ source: n.source, target: n.url });
       }
+    });
+
+    mapEmptyEl.hidden = nodesMap.length > 0;
+
+    if (nodesMap.length === 0) {
+      ForceGraph.graphData({ nodes: [], links: [] });
+      return;
     }
 
-    try {
-      cosmosGraph.setPointPositions(positions);
-      cosmosGraph.setLinks(new Float32Array(links));
-      cosmosGraph.render();
-    } catch (err) {
-      console.error('Cosmograph setData failed:', err);
+    // Only update if data actually changed to prevent simulation resets
+    if (nodesMap.length === lastDrawnNodeCount && links.length === lastDrawnLinkCount) {
+      return;
     }
+    lastDrawnNodeCount = nodesMap.length;
+    lastDrawnLinkCount = links.length;
+
+    const graphNodes = nodesMap.map(n => ({
+      id: n.url,
+      path: n.path,
+      depth: n.depth,
+      files: n.files
+    }));
+
+    ForceGraph.graphData({ nodes: graphNodes, links: links });
   }
 
   function showPopup(node, px, py) {
@@ -807,7 +741,7 @@
     const pathEl = document.createElement('span');
     pathEl.className = 'np-path';
     pathEl.textContent = node.path === '/' ? 'ORIGIN' : node.path;
-    pathEl.title = node.url;
+    pathEl.title = node.id;
 
     const close = document.createElement('button');
     close.type = 'button';
@@ -827,8 +761,9 @@
     const meta = document.createElement('div');
     meta.className = 'np-meta';
     const n = node.files.length;
-    meta.textContent = node.host + ' · ' + (n ? n + ' audio file' + (n > 1 ? 's' : '') : 'no audio files');
-    meta.title = node.url;
+    const host = new URL(node.id).hostname;
+    meta.textContent = host + ' · ' + (n ? n + ' audio file' + (n > 1 ? 's' : '') : 'no audio files');
+    meta.title = node.id;
     popupEl.appendChild(meta);
 
     const list = document.createElement('div');
@@ -862,10 +797,8 @@
 
     popupEl.appendChild(list);
     popupEl.hidden = false;
-    positionPopup(px, py);
-  }
-
-  function positionPopup(px, py) {
+    
+    // Position popup relative to the map wrapper
     const rect = mapWrap.getBoundingClientRect();
     const pw = popupEl.offsetWidth;
     const ph = popupEl.offsetHeight;
