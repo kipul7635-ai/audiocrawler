@@ -662,17 +662,20 @@
 
     try {
       cosmosGraph = new Cosmos.Graph(container, {
-        // Cosmograph v2 configuration
-        simulationGravity: 0.08,
-        simulationRepulsion: 1.4,
-        simulationLinkSpring: 0.7,
-        simulationLinkDistance: 40,
+        // --- Simulation parameters tuned for spreading out nodes ---
+        simulationGravity: 0.05,        // Reduced gravity to prevent collapse
+        simulationRepulsion: 1.8,       // Strong repulsion to push nodes apart
+        simulationLinkSpring: 0.4,      // Weaker link spring so links don't pull too hard
+        simulationLinkDistance: 60,     // Increased minimum link distance
         simulationFriction: 0.92,
         spaceSize: 8192,
         backgroundColor: '#fafafa',
-        // In v2, node/point colors and sizes are set via arrays, not accessors
-        // We'll use the defaults for simplicity, or you can set them with
-        // setPointColors() and setPointSizes()
+        enableDrag: true,
+        rescalePositions: true,         // Helpful for initial layout
+        curvedLinks: false,             // Straight links are clearer
+        fitViewOnInit: true,
+        fitViewDelay: 1200,             // Wait for simulation to settle
+        fitViewPadding: 0.3,            // Padding around the graph
         onClick: function (index) { handleNodeClick(index); }
       });
       return true;
@@ -720,7 +723,6 @@
     const nodes = Array.from(pageNodes.values());
     const totalFiles = nodes.reduce(function (s, n) { return s + n.files.length; }, 0);
 
-    // skip expensive redraw if nothing changed
     if (nodes.length === lastDrawnNodeCount && totalFiles === lastDrawnFileCount) {
       return;
     }
@@ -730,7 +732,6 @@
     mapEmptyEl.hidden = nodes.length > 0;
 
     if (nodes.length === 0) {
-      // In v2, to clear we can set empty positions and links
       try {
         cosmosGraph.setPointPositions(new Float32Array(0));
         cosmosGraph.setLinks(new Float32Array(0));
@@ -744,9 +745,8 @@
     nodeUrls.forEach(function (url, i) { nodeIndex.set(url, i); });
 
     const N = nodes.length;
-    const positions = new Float32Array(N * 2); // [x1, y1, x2, y2, ...]
+    const positions = new Float32Array(N * 2);
 
-    // Seed initial positions in concentric rings by crawl depth
     let maxDepth = 0;
     for (let i = 0; i < N; i++) if (nodes[i].depth > maxDepth) maxDepth = nodes[i].depth;
 
@@ -774,7 +774,6 @@
       }
     }
 
-    // Links: [sourceIndex1, targetIndex1, sourceIndex2, targetIndex2, ...]
     const links = [];
     for (let i = 0; i < N; i++) {
       const n = nodes[i];
@@ -787,7 +786,6 @@
     }
 
     try {
-      // V2 API: setPointPositions, setLinks, then render
       cosmosGraph.setPointPositions(positions);
       cosmosGraph.setLinks(new Float32Array(links));
       cosmosGraph.render();
