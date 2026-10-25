@@ -85,7 +85,7 @@
     padding:10px 16px;
     font-size:12px;
     line-height:1.55;
-    height:calc(100vh - 240px);
+    height:calc(100dvh - 240px);
     min-height:300px;
     overflow-y:auto;
     background:#fafafa;
@@ -102,7 +102,7 @@
   #map{
     display:block;
     width:100%;
-    height:calc(100vh - 240px);
+    height:calc(100dvh - 240px);
     min-height:400px;
     background:#fafafa;
     border:1px solid var(--soft);
@@ -194,9 +194,8 @@
   let abortController = null;
   let finished = false, pageCount = 0, fileCount = 0, errCount = 0, rowCount = 0;
 
-  let originHost = '';
-  const hosts = new Map();          // host -> 'origin' | 'sub' | 'cdn'
-  const fileCountByHost = new Map();
+  let originUrl = '';
+  const pageNodes = new Map(); // url -> { url, path, host, depth, source, files }
 
   form.addEventListener('submit', function (e) { e.preventDefault(); begin(); });
   stopBtn.addEventListener('click', function () { stop('stopped'); });
@@ -213,13 +212,14 @@
     const tab = btn.dataset.tab;
     tabsNav.querySelectorAll('button').forEach(function (b) { b.classList.toggle('active', b === btn); });
     Object.keys(panels).forEach(function (k) { panels[k].classList.toggle('active', k === tab); });
-    if (tab === 'map') drawMap();
+    if (tab === 'map') requestAnimationFrame(drawMap);
     if (tab === 'logs') logsEl.scrollTop = logsEl.scrollHeight;
   });
 
-  window.addEventListener('resize', function () {
+  const mapResizeObserver = new ResizeObserver(() => {
     if (panels.map.classList.contains('active')) drawMap();
   });
+  mapResizeObserver.observe(mapSvg);
 
   function setStatus(t) { statusEl.textContent = t; }
 
@@ -236,26 +236,6 @@
     if (nearBottom) logsEl.scrollTop = logsEl.scrollHeight;
   }
 
-  function classifyHost(host) {
-    if (!originHost) return 'cdn';
-    if (host === originHost) return 'origin';
-    if (host.endsWith('.' + originHost)) return 'sub';
-    return 'cdn';
-  }
-
-  function addHost(host) {
-    if (!host) return;
-    host = host.toLowerCase();
-    if (hosts.has(host)) return;
-    hosts.set(host, classifyHost(host));
-    if (panels.map.classList.contains('active')) drawMap();
-  }
-
-  function bumpFileCount(host) {
-    host = host.toLowerCase();
-    fileCountByHost.set(host, (fileCountByHost.get(host) || 0) + 1);
-  }
-
   function begin() {
     stop('');
     finished = false; pageCount = 0; fileCount = 0; errCount = 0; rowCount = 0;
@@ -264,17 +244,12 @@
     player.hidden = true;
     audio.pause(); audio.removeAttribute('src');
 
-    originHost = '';
-    hosts.clear();
-    fileCountByHost.clear();
-    try { originHost = new URL(urlIn.value.trim()).hostname.toLowerCase(); } catch (_) {}
-    if (originHost) {
-      hosts.set(originHost, 'origin');
-    }
-    if (panels.map.classList.contains('active')) drawMap();
+    originUrl = urlIn.value.trim();
+    pageNodes.clear();
+    if (panels.map.classList.contains('active')) requestAnimationFrame(drawMap);
 
     const params = new URLSearchParams({
-      url: urlIn.value.trim(),
+      url: originUrl,
       scope: scopeIn.value.trim(),
       maxPages: pagesIn.value,
       maxDepth: depthIn.value
@@ -284,8 +259,7 @@
     goBtn.disabled = true;
     stopBtn.disabled = false;
 
-    addLog('info', 'starting crawl: ' + urlIn.value.trim());
-    if (originHost) addLog('info', 'origin host: ' + originHost);
+    addLog('info', 'starting crawl: ' + originUrl);
 
     abortController = new AbortController();
     runCrawl(params, abortController.signal);
@@ -342,18 +316,33 @@
       pageCount++;
       if (m.status === 'ok') {
         addLog('ok', 'ok    ' + m.url + (m.links != null ? '   (' + m.links + ' links)' : ''));
+        // Populate the map graph
+        try {
+          const u = new URL(m.url);
+          pageNodes.set(m.url, {
+            url: m.url,
+            path: u.pathname,
+            host: u.hostname,
+            depth: m.depth || 0,
+            source: m.source,
+            files: 0
+          });
+        } catch (_) {}
+        if (panels.map.classList.contains('active')) requestAnimationFrame(drawMap);
       } else {
         errCount++;
         addLog('fail', 'fail  ' + m.url + '   — ' + (m.reason || 'unknown'));
       }
       setStatus('scanning — ' + pageCount + ' pages · ' + fileCount + ' files');
     } else if (m.type === 'file') {
-      bumpFileCount(m.file.host);
-      addHost(m.file.host);
+      // Increment the file count on the page node where the file was found
+      if (pageNodes.has(m.file.page)) {
+        pageNodes.get(m.file.page).files++;
+        if (panels.map.classList.contains('active')) requestAnimationFrame(drawMap);
+      }
       addRow(m.file);
       addLog('file', 'file  ' + m.file.host + ' / ' + m.file.name + '   ← ' + m.file.page);
     } else if (m.type === 'host') {
-      addHost(m.host);
       addLog('info', 'host  ' + m.host);
     } else if (m.type === 'error') {
       errCount++;
@@ -448,20 +437,7 @@
     tr.style.display = tr.dataset.search.indexOf(q) === -1 ? 'none' : '';
   }
 
-  // ---------------- map ----------------
-
-  function placeRing(items, radius, cx, cy) {
-    const n = items.length;
-    if (n === 0) return [];
-    return items.map(function (host, i) {
-      const angle = (i / n) * Math.PI * 2 - Math.PI / 2;
-      return {
-        host: host,
-        x: cx + Math.cos(angle) * radius,
-        y: cy + Math.sin(angle) * radius
-      };
-    });
-  }
+  // ---------------- map (radial tree) ----------------
 
   function drawMap() {
     const rect = mapSvg.getBoundingClientRect();
@@ -477,84 +453,117 @@
       return el;
     }
 
-    const cx = W / 2, cy = H / 2;
-
-    if (!originHost) {
+    const nodes = Array.from(pageNodes.values());
+    if (nodes.length === 0) {
       const t = make('text', {
-        x: cx, y: cy, 'text-anchor': 'middle',
-        'font-family': 'ui-monospace, monospace',
-        'font-size': 12, fill: '#767676'
+        x: W / 2, y: H / 2, 'text-anchor': 'middle',
+        'font-family': 'ui-monospace, monospace', 'font-size': 12, fill: '#767676'
       });
       t.textContent = 'start a crawl to see the map';
       mapSvg.appendChild(t);
       return;
     }
 
-    const subs = [];
-    const cdns = [];
-    hosts.forEach(function (kind, host) {
-      if (kind === 'sub') subs.push(host);
-      else if (kind === 'cdn') cdns.push(host);
+    const maxDepth = Math.max(...nodes.map(n => n.depth), 0);
+    const cx = W / 2, cy = H / 2;
+    const maxR = Math.min(W, H) / 2 - 50;
+    const step = maxR / Math.max(1, maxDepth);
+
+    // Group nodes by depth
+    const rings = Array.from({ length: maxDepth + 1 }, () => []);
+    nodes.forEach(n => {
+      if (n.depth <= maxDepth) rings[n.depth].push(n);
     });
 
-    const maxR = Math.min(W, H) / 2 - 40;
-    const rSub = Math.min(maxR * 0.55, 180);
-    const rCdn = Math.min(maxR * 0.85, 280);
+    // Sort siblings by source so lines don't tangle
+    rings.forEach(ring => ring.sort((a, b) => (a.source || '').localeCompare(b.source || '')));
 
-    const subNodes = placeRing(subs, rSub, cx, cy);
-    const cdnNodes = placeRing(cdns, rCdn, cx, cy);
+    const positions = new Map();
 
-    subNodes.forEach(function (n) {
-      mapSvg.appendChild(make('line', {
-        x1: cx, y1: cy, x2: n.x, y2: n.y,
-        stroke: '#111', 'stroke-width': 1
-      }));
-    });
-    cdnNodes.forEach(function (n) {
-      mapSvg.appendChild(make('line', {
-        x1: cx, y1: cy, x2: n.x, y2: n.y,
-        stroke: '#ccc', 'stroke-width': 1, 'stroke-dasharray': '3 3'
-      }));
-    });
-
-    mapSvg.appendChild(make('circle', { cx: cx, cy: cy, r: 12, fill: '#ff3b00' }));
-    const originLabel = make('text', {
-      x: cx, y: cy + 30, 'text-anchor': 'middle',
-      'font-family': 'ui-monospace, monospace',
-      'font-size': 12, 'font-weight': 700, fill: '#111'
-    });
-    originLabel.textContent = originHost;
-    mapSvg.appendChild(originLabel);
-
-    subNodes.forEach(function (n) {
-      const count = fileCountByHost.get(n.host) || 0;
-      const r = 6 + Math.min(6, count);
-      mapSvg.appendChild(make('circle', {
-        cx: n.x, cy: n.y, r: r, fill: '#fff', stroke: '#111', 'stroke-width': 2
-      }));
-      const t = make('text', {
-        x: n.x, y: n.y + 24, 'text-anchor': 'middle',
-        'font-family': 'ui-monospace, monospace',
-        'font-size': 11, fill: '#111'
+    // Calculate coordinates
+    rings.forEach((ring, depth) => {
+      const r = depth * step;
+      const n = ring.length;
+      ring.forEach((node, i) => {
+        let x = cx, y = cy;
+        if (n > 0) {
+          const angle = (i / n) * Math.PI * 2 - Math.PI / 2;
+          x = cx + Math.cos(angle) * r;
+          y = cy + Math.sin(angle) * r;
+        }
+        positions.set(node.url, { x, y });
       });
-      t.textContent = count ? (n.host + ' · ' + count) : n.host;
-      mapSvg.appendChild(t);
     });
 
-    cdnNodes.forEach(function (n) {
-      const count = fileCountByHost.get(n.host) || 0;
-      const r = 5 + Math.min(5, count);
-      mapSvg.appendChild(make('circle', {
-        cx: n.x, cy: n.y, r: r, fill: '#fff', stroke: '#bbb', 'stroke-width': 2
-      }));
-      const t = make('text', {
-        x: n.x, y: n.y + 22, 'text-anchor': 'middle',
-        'font-family': 'ui-monospace, monospace',
-        'font-size': 10, fill: '#767676'
-      });
-      t.textContent = count ? (n.host + ' · ' + count) : n.host;
-      mapSvg.appendChild(t);
+    // Draw connecting lines (edges)
+    nodes.forEach(node => {
+      if (node.depth === 0) return;
+      const srcPos = positions.get(node.source) || { x: cx, y: cy };
+      const dstPos = positions.get(node.url);
+      if (srcPos && dstPos) {
+        mapSvg.appendChild(make('line', {
+          x1: srcPos.x, y1: srcPos.y, x2: dstPos.x, y2: dstPos.y,
+          stroke: '#d9d9d9', 'stroke-width': 1
+        }));
+      }
     });
+
+    // Draw the nodes (pages)
+    nodes.forEach(node => {
+      const pos = positions.get(node.url);
+      if (!pos) return;
+
+      const isRoot = node.depth === 0;
+      const hasFiles = node.files > 0;
+      const r = isRoot ? 12 : (hasFiles ? 8 : 5);
+      const fill = isRoot ? '#ff3b00' : (hasFiles ? '#fff2ee' : '#fff');
+      const stroke = isRoot ? 'none' : (hasFiles ? '#ff3b00' : '#111');
+      const strokeW = isRoot ? 0 : (hasFiles ? 2 : 1.5);
+
+      mapSvg.appendChild(make('circle', {
+        cx: pos.x, cy: pos.y, r: r, fill: fill, stroke: stroke, 'stroke-width': strokeW
+      }));
+
+      // Label text (e.g. /site1 or ROOT)
+      let label = node.path === '/' ? 'ROOT' : node.path;
+      if (label.length > 15) label = label.substring(0, 13) + '...';
+
+      const text = make('text', {
+        x: pos.x, y: pos.y + (isRoot ? 26 : 20), 'text-anchor': 'middle',
+        'font-family': 'ui-monospace, monospace',
+        'font-size': isRoot ? 12 : 10,
+        'font-weight': isRoot ? 700 : 400,
+        fill: isRoot ? '#111' : (hasFiles ? '#b3261e' : '#767676')
+      });
+      text.textContent = label;
+
+      // Tooltip on hover
+      const title = make('title');
+      title.textContent = node.url + (hasFiles ? ` (${node.files} audio files)` : '');
+      text.appendChild(title);
+
+      mapSvg.appendChild(text);
+    });
+
+    // Legend
+    const legend = make('g', { transform: 'translate(16, 16)' });
+
+    legend.appendChild(make('circle', { cx: 6, cy: 6, r: 6, fill: '#ff3b00' }));
+    const t1 = make('text', { x: 18, y: 10, 'font-family': 'ui-monospace, monospace', 'font-size': 11, fill: '#111' });
+    t1.textContent = 'Start Page';
+    legend.appendChild(t1);
+
+    legend.appendChild(make('circle', { cx: 6, cy: 26, r: 5, fill: '#fff', stroke: '#111', 'stroke-width': 1.5 }));
+    const t2 = make('text', { x: 18, y: 30, 'font-family': 'ui-monospace, monospace', 'font-size': 11, fill: '#111' });
+    t2.textContent = 'Crawled Page';
+    legend.appendChild(t2);
+
+    legend.appendChild(make('circle', { cx: 6, cy: 46, r: 6, fill: '#fff2ee', stroke: '#ff3b00', 'stroke-width': 2 }));
+    const t3 = make('text', { x: 18, y: 50, 'font-family': 'ui-monospace, monospace', 'font-size': 11, fill: '#b3261e' });
+    t3.textContent = 'Page with Audio';
+    legend.appendChild(t3);
+
+    mapSvg.appendChild(legend);
   }
 })();
 </script>
