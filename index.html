@@ -644,23 +644,52 @@
     ForceGraph = window.ForceGraph()(container)
       .backgroundColor('#fafafa')
       .nodeId('id')
-      .nodeVal(node => node.depth === 0 ? 12 : (node.files.length > 0 ? 6 : 3))
+      // Make nodes smaller globally
+      .nodeRelSize(2) 
+      .nodeVal(node => node.depth === 0 ? 6 : (node.files.length > 0 ? 3 : 1.5))
       .nodeColor(node => {
         if (node.depth === 0) return '#ff3b00'; // Start page
         if (node.files.length > 0) return '#ff3b00'; // Has audio
         return '#bbbbbb'; // Standard crawled page
       })
+      // Native tooltips (show when hovering/pressing long on a node)
       .nodeLabel(node => {
         let label = node.path === '/' ? 'ORIGIN' : node.path;
-        if (label.length > 20) label = label.substring(0, 18) + '...';
         return `<div style="font-family:monospace; font-size:11px; padding:4px 8px; background:#fff; border:1px solid #111; color:#111;">${label}</div>`;
+      })
+      // Draw text labels directly on the canvas above the nodes
+      .nodeCanvasObjectMode(() => 'after')
+      .nodeCanvasObject((node, ctx, globalScale) => {
+        // Hide text if zoomed out too far to save performance and prevent clutter
+        if (globalScale < 0.6) return;
+
+        let label = node.path === '/' ? 'ORIGIN' : node.path;
+        if (label.length > 20) label = label.substring(0, 18) + '...';
+
+        const fontSize = 10 / globalScale;
+        ctx.font = `${fontSize}px ui-monospace, monospace`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+
+        // Estimate radius to push label above the node
+        const radius = Math.sqrt(node.val) * 2; 
+        const yOffset = radius + fontSize / 2 + 2;
+
+        // Draw white stroke for readability against background
+        ctx.strokeStyle = '#fafafa';
+        ctx.lineWidth = 3 / globalScale;
+        ctx.strokeText(label, node.x, node.y - yOffset);
+
+        // Draw the actual text
+        ctx.fillStyle = node.depth === 0 ? '#111' : (node.files.length > 0 ? '#b3261e' : '#767676');
+        ctx.fillText(label, node.x, node.y - yOffset);
       })
       .linkColor(() => '#d9d9d9')
       .linkWidth(1.2)
       .d3AlphaDecay(0.02)
-      .d3VelocityDecay(0.3) // Controls friction (lower = stops faster)
-      .warmupTicks(100) // Pre-calculate layout so it doesn't jitter
-      .cooldownTicks(150) // Stops calculating after a bit to save battery
+      .d3VelocityDecay(0.3) 
+      .warmupTicks(100) 
+      .cooldownTicks(150) 
       .onNodeClick((node, event) => {
         if (selectedUrl === node.id) {
           selectedUrl = null;
@@ -696,7 +725,6 @@
 
     const nodesMap = Array.from(pageNodes.values());
     
-    // Build links array
     const links = [];
     nodesMap.forEach(n => {
       if (n.source && pageNodes.has(n.source)) {
@@ -711,7 +739,6 @@
       return;
     }
 
-    // Only update if data actually changed to prevent simulation resets
     if (nodesMap.length === lastDrawnNodeCount && links.length === lastDrawnLinkCount) {
       return;
     }
@@ -798,7 +825,6 @@
     popupEl.appendChild(list);
     popupEl.hidden = false;
     
-    // Position popup relative to the map wrapper
     const rect = mapWrap.getBoundingClientRect();
     const pw = popupEl.offsetWidth;
     const ph = popupEl.offsetHeight;
