@@ -1,9 +1,6 @@
 // functions/api/crawl.js
-// Cloudflare Pages Function. Deployed automatically at /api/crawl
-
 const AUDIO_EXT = /\.(mp3|mp2|wav|ogg|oga|m4a|m4b|flac|aac|opus|weba|wma|aiff|aif|aifc|ape|mka|mpc|m3u|m3u8|pls|xspf)$/i;
-
-const CONCURRENCY = 6; // parallel page fetches per batch
+const CONCURRENCY = 6;
 
 export async function onRequestGet(context) {
   const { request } = context;
@@ -38,30 +35,37 @@ export async function onRequestGet(context) {
       let closed = false;
       const send = (obj) => {
         if (closed) return;
-        try {
-          controller.enqueue(encoder.encode(JSON.stringify(obj) + '\n'));
-        } catch { closed = true; }
+        try { controller.enqueue(encoder.encode(JSON.stringify(obj) + '\n')); }
+        catch { closed = true; }
       };
 
       const visited = new Set();
       const seenFiles = new Set();
+      const seenHosts = new Set();
       const normalize = (u) => {
         try { const n = new URL(u); n.hash = ''; return n.href; }
         catch { return u; }
+      };
+      const noteHost = (hostname) => {
+        hostname = hostname.toLowerCase();
+        if (seenHosts.has(hostname)) return;
+        seenHosts.add(hostname);
+        send({ type: 'host', host: hostname });
       };
 
       const queue = [{ url: start.href, depth: 0 }];
       visited.add(normalize(start.href));
 
-      let pagesCrawled = 0;
+      let pagesAttempted = 0;
       let fileCount = 0;
       let failed = 0;
 
+      noteHost(start.hostname);
+
       try {
-        while (queue.length > 0 && pagesCrawled < maxPages) {
-          // take a batch
+        while (queue.length > 0 && pagesAttempted < maxPages) {
           const batch = [];
-          while (queue.length > 0 && batch.length < CONCURRENCY && pagesCrawled + batch.length < maxPages) {
+          while (queue.length > 0 && batch.length < CONCURRENCY && pagesAttempted + batch.length < maxPages) {
             const item = queue.shift();
             if (!inScope(new URL(item.url).hostname)) continue;
             batch.push(item);
@@ -73,30 +77,32 @@ export async function onRequestGet(context) {
           for (let i = 0; i < batch.length; i++) {
             const item = batch[i];
             const res = results[i];
-            pagesCrawled++;
-            send({ type: 'page' });
+            pagesAttempted++;
 
             if (res.status !== 'fulfilled') {
               failed++;
-              send({ type: 'error', url: item.url });
+              const reason = res.reason && res.reason.message ? res.reason.message : 'fetch failed';
+              send({ type: 'page', url: item.url, status: 'fail', reason: reason });
               continue;
             }
 
             let links;
             try {
               links = await extractLinks(res.value, item.url);
-            } catch {
+            } catch (e) {
               failed++;
-              send({ type: 'error', url: item.url });
+              send({ type: 'page', url: item.url, status: 'fail', reason: 'parse error' });
               continue;
             }
 
+            send({ type: 'page', url: item.url, status: 'ok', links: links.length });
+
             for (const abs of links) {
-              // audio file?
               if (AUDIO_EXT.test(abs.pathname)) {
                 if (!seenFiles.has(abs.href)) {
                   seenFiles.add(abs.href);
                   fileCount++;
+                  noteHost(abs.hostname);
                   send({
                     type: 'file',
                     file: {
@@ -110,23 +116,23 @@ export async function onRequestGet(context) {
                 continue;
               }
 
-              // crawl deeper?
               if (item.depth < maxDepth && inScope(abs.hostname)) {
                 const key = normalize(abs.href);
                 if (visited.has(key)) continue;
                 visited.add(key);
+                noteHost(abs.hostname);
                 queue.push({ url: abs.href, depth: item.depth + 1 });
               }
             }
           }
         }
 
-        send({ type: 'done', stats: { pages: pagesCrawled, files: fileCount, failed } });
+        send({ type: 'done', stats: { pages: pagesAttempted, files: fileCount, failed: failed } });
       } catch (err) {
-        send({ type: 'error', message: String(err) });
-        send({ type: 'done', stats: { pages: pagesCrawled, files: fileCount, failed } });
+        send({ type: 'error', message: String(err && err.message ? err.message : err) });
+        send({ type: 'done', stats: { pages: pagesAttempted, files: fileCount, failed: failed } });
       } finally {
-        if (!closed) { try { controller.close(); } catch {} }
+        if (!closed) { try { controller.close(); } catch (_) {} }
       }
     },
     cancel() { /* client disconnected */ }
@@ -171,17 +177,17 @@ async function extractLinks(response, baseUrl) {
   };
 
   const rewriter = new HTMLRewriter()
-    .on('a[href]',        { element(e) { addHref(e.getAttribute('href')); } })
-    .on('area[href]',     { element(e) { addHref(e.getAttribute('href')); } })
-    .on('link[href]',     { element(e) { addHref(e.getAttribute('href')); } })
-    .on('audio[src]',     { element(e) { addHref(e.getAttribute('src')); } })
-    .on('audio source[src]', { element(e) { addHref(e.getAttribute('src')); } })
-    .on('video[src]',     { element(e) { addHref(e.getAttribute('src')); } })
-    .on('video source[src]', { element(e) { addHref(e.getAttribute('src')); } })
-    .on('source[src]',    { element(e) { addHref(e.getAttribute('src')); } })
-    .on('meta[property="og:audio"]',         { element(e) { addHref(e.getAttribute('content')); } })
-    .on('meta[property="og:audio:url"]',     { element(e) { addHref(e.getAttribute('content')); } })
-    .on('meta[name="twitter:player:stream"]',{ element(e) { addHref(e.getAttribute('content')); } });
+    .on('a[href]',            { element(e) { addHref(e.getAttribute('href')); } })
+    .on('area[href]',         { element(e) { addHref(e.getAttribute('href')); } })
+    .on('link[href]',         { element(e) { addHref(e.getAttribute('href')); } })
+    .on('audio[src]',         { element(e) { addHref(e.getAttribute('src')); } })
+    .on('audio source[src]',  { element(e) { addHref(e.getAttribute('src')); } })
+    .on('video[src]',         { element(e) { addHref(e.getAttribute('src')); } })
+    .on('video source[src]',  { element(e) { addHref(e.getAttribute('src')); } })
+    .on('source[src]',        { element(e) { addHref(e.getAttribute('src')); } })
+    .on('meta[property="og:audio"]',          { element(e) { addHref(e.getAttribute('content')); } })
+    .on('meta[property="og:audio:url"]',      { element(e) { addHref(e.getAttribute('content')); } })
+    .on('meta[name="twitter:player:stream"]', { element(e) { addHref(e.getAttribute('content')); } });
 
   await rewriter.transform(response).text();
 
@@ -192,7 +198,7 @@ async function extractLinks(response, baseUrl) {
       if (abs.protocol !== 'http:' && abs.protocol !== 'https:') continue;
       abs.hash = '';
       out.push(abs);
-    } catch {}
+    } catch (_) {}
   }
   return out;
 }
