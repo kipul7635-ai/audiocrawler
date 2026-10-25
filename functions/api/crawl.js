@@ -23,10 +23,12 @@ async function handleCrawl(context, resume) {
   const scopeParam = (q.get('scope') || '').trim().toLowerCase();
   let maxPages = parseInt(q.get('maxPages') || '100', 10);
   let maxDepth = parseInt(q.get('maxDepth') || '3', 10);
+  
   if (!Number.isFinite(maxPages)) maxPages = 100;
+  maxPages = Math.max(1, Math.min(maxPages, 2000)); // Keep page limit sane for worker memory
+  
   if (!Number.isFinite(maxDepth)) maxDepth = 3;
-  maxPages = Math.max(1, Math.min(maxPages, 2000));
-  maxDepth = Math.max(0, Math.min(maxDepth, 10));
+  maxDepth = Math.max(0, maxDepth); // Removed the upper limit of 10
 
   if (!startUrl) return json({ error: 'url required' }, 400);
 
@@ -57,7 +59,6 @@ async function handleCrawl(context, resume) {
         catch { return u; }
       };
 
-      // ---- resume-aware initialization ----
       const visited = new Set(Array.isArray(resume?.visited) ? resume.visited : []);
       const seenFiles = new Set(Array.isArray(resume?.seenFiles) ? resume.seenFiles : []);
       const queue = Array.isArray(resume?.queue) && resume.queue.length
@@ -66,10 +67,10 @@ async function handleCrawl(context, resume) {
 
       if (!resume) visited.add(normalize(start.href));
 
-      let pagesAttempted = resume?.stats?.pages || 0;   // cumulative
-      let fileCount     = resume?.stats?.files || 0;    // cumulative
-      let failed        = resume?.stats?.failed || 0;   // cumulative
-      let pagesThisWorker = 0;                          // per-worker budget
+      let pagesAttempted = resume?.stats?.pages || 0;
+      let fileCount     = resume?.stats?.files || 0;
+      let failed        = resume?.stats?.failed || 0;
+      let pagesThisWorker = 0;
 
       try {
         while (queue.length > 0 && pagesThisWorker < maxPages) {
@@ -188,14 +189,15 @@ async function fetchPage(url) {
   if (!res.ok) throw new Error('HTTP ' + res.status);
   const ct = (res.headers.get('content-type') || '').toLowerCase();
   if (!ct.includes('text/html') && !ct.includes('application/xhtml')) {
-    throw new Error('not html');
+    throw new Error('not html (' + ct + ')');
   }
   return res;
 }
 
-async function extractLinks(response, baseUrl) {
-  const base = new URL(baseUrl);
+async function extractLinks(response, currentUrl) {
+  let baseUrl = currentUrl;
   const hrefs = new Set();
+  
   const addHref = (h) => {
     if (!h) return;
     h = h.trim();
@@ -206,9 +208,14 @@ async function extractLinks(response, baseUrl) {
   };
 
   const rewriter = new HTMLRewriter()
+    .on('base[href]', { element(e) { 
+      try { baseUrl = new URL(e.getAttribute('href'), currentUrl).href; } catch(_){}
+    }})
     .on('a[href]',            { element(e) { addHref(e.getAttribute('href')); } })
     .on('area[href]',         { element(e) { addHref(e.getAttribute('href')); } })
     .on('link[href]',         { element(e) { addHref(e.getAttribute('href')); } })
+    .on('iframe[src]',        { element(e) { addHref(e.getAttribute('src')); } })
+    .on('frame[src]',         { element(e) { addHref(e.getAttribute('src')); } })
     .on('audio[src]',         { element(e) { addHref(e.getAttribute('src')); } })
     .on('audio source[src]',  { element(e) { addHref(e.getAttribute('src')); } })
     .on('video[src]',         { element(e) { addHref(e.getAttribute('src')); } })
@@ -223,7 +230,7 @@ async function extractLinks(response, baseUrl) {
   const out = [];
   for (const href of hrefs) {
     try {
-      const abs = new URL(href, base);
+      const abs = new URL(href, baseUrl);
       if (abs.protocol !== 'http:' && abs.protocol !== 'https:') continue;
       abs.hash = '';
       out.push(abs);
