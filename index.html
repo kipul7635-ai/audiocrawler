@@ -38,12 +38,36 @@
   form button#stop:hover:not(:disabled){ background:var(--accent); color:#fff; }
 
   #bar{ display:flex; align-items:center; gap:12px; padding:8px 16px; border-bottom:1px solid var(--soft); }
-  #status{ color:var(--muted); flex:1; }
+  #status{ color:var(--muted); flex:1; min-width:140px; }
   #filter{
     border:1px solid var(--soft); padding:5px 8px; font:inherit; color:inherit;
     background:transparent; outline:none; width:220px;
   }
   #filter:focus{ border-color:var(--line); }
+  #bar button{
+    border:1px solid var(--line); background:#fff; color:var(--fg);
+    font:inherit; font-size:11px; letter-spacing:2px; text-transform:uppercase;
+    padding:5px 10px; cursor:pointer;
+  }
+  #bar button:hover, #bar button.on{ background:var(--fg); color:#fff; }
+
+  #mapPanel{ border-bottom:2px solid var(--line); background:#fafafa; }
+  #mapPanel[hidden]{ display:none; }
+  #mapHead{
+    display:flex; align-items:center; justify-content:space-between;
+    padding:8px 16px; border-bottom:1px solid var(--soft);
+    font-size:11px; letter-spacing:2px; text-transform:uppercase; color:var(--muted);
+  }
+  #mapHead button{
+    border:1px solid var(--line); background:#fff; color:var(--fg);
+    font:inherit; font-size:13px; line-height:1; padding:2px 8px; cursor:pointer;
+  }
+  #mapHead button:hover{ background:var(--fg); color:#fff; }
+  #mapScroll{ overflow:auto; max-height:56vh; }
+  #mapSvg{ display:block; }
+  #mapSvg text{ font:11px ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace; user-select:none; }
+  #mapSvg .node{ cursor:pointer; }
+  #mapSvg .node:not(.root):hover{ fill:#fff2ee; }
 
   table{ width:100%; border-collapse:collapse; }
   th,td{ text-align:left; padding:6px 12px; border-bottom:1px solid #eee; vertical-align:top; }
@@ -99,7 +123,18 @@
 
 <div id="bar">
   <span id="status">idle</span>
+  <button id="mapBtn" type="button">map</button>
   <input id="filter" placeholder="filter…" spellcheck="false" autocomplete="off">
+</div>
+
+<div id="mapPanel" hidden>
+  <div id="mapHead">
+    <span>site map — click a node to filter the list</span>
+    <button id="mapClose" type="button" aria-label="close map">×</button>
+  </div>
+  <div id="mapScroll">
+    <svg id="mapSvg" xmlns="http://www.w3.org/2000/svg"></svg>
+  </div>
 </div>
 
 <table>
@@ -119,18 +154,29 @@
 (function () {
   'use strict';
 
+  const NS = 'http://www.w3.org/2000/svg';
   const $ = (s) => document.querySelector(s);
   const form = $('#form'), urlIn = $('#url'), scopeIn = $('#scope'),
         pagesIn = $('#pages'), depthIn = $('#depth'),
         goBtn = $('#go'), stopBtn = $('#stop'), statusEl = $('#status'),
         tbody = $('#tbody'), player = $('#player'), audio = $('#audio'),
-        nowPlaying = $('#nowplaying'), filterIn = $('#filter');
+        nowPlaying = $('#nowplaying'), filterIn = $('#filter'),
+        mapBtn = $('#mapBtn'), mapPanel = $('#mapPanel'), mapClose = $('#mapClose'),
+        mapSvg = $('#mapSvg');
 
   let es = null, finished = false, pageCount = 0, fileCount = 0, errCount = 0, rowCount = 0;
+
+  /* ----- map state ----- */
+  let mapOpen = false;
+  let rootHost = '';
+  let nodes = new Map();   // host -> file count
+  let edges = new Map();   // child host -> parent host
 
   form.addEventListener('submit', function (e) { e.preventDefault(); begin(); });
   stopBtn.addEventListener('click', function () { stop('stopped'); });
   filterIn.addEventListener('input', applyFilter);
+  mapBtn.addEventListener('click', toggleMap);
+  mapClose.addEventListener('click', function () { toggleMap(false); });
   $('#closePlayer').addEventListener('click', function () {
     audio.pause(); audio.removeAttribute('src'); audio.load();
     player.hidden = true;
@@ -139,12 +185,32 @@
 
   function setStatus(t) { statusEl.textContent = t; }
 
+  /* ===== host helpers ===== */
+  function hostOf(u) {
+    if (!u) return '';
+    u = String(u).trim();
+    if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(u)) u = 'https://' + u;
+    try { return new URL(u).hostname.toLowerCase(); } catch (e) { return ''; }
+  }
+  function stripWww(h) { return h.replace(/^www\./i, ''); }
+  function isInScope(h) {
+    if (!h || !rootHost) return false;
+    return h === rootHost || h.endsWith('.' + rootHost);
+  }
+
+  /* ===== crawl ===== */
   function begin() {
     stop('');
     finished = false; pageCount = 0; fileCount = 0; errCount = 0; rowCount = 0;
     tbody.textContent = '';
     player.hidden = true;
     audio.pause(); audio.removeAttribute('src');
+
+    // reset map
+    nodes = new Map();
+    edges = new Map();
+    rootHost = hostOf(scopeIn.value) || stripWww(hostOf(urlIn.value)) || '';
+    if (mapOpen) renderMap();
 
     const params = new URLSearchParams({
       url: urlIn.value.trim(),
@@ -181,6 +247,8 @@
       setStatus('scanning — ' + pageCount + ' pages · ' + fileCount + ' files');
     } else if (m.type === 'file') {
       addRow(m.file);
+      registerMap(m.file);
+      if (mapOpen) renderMap();
     } else if (m.type === 'error') {
       errCount++;
     } else if (m.type === 'done') {
@@ -188,6 +256,7 @@
       const s = m.stats || { pages: pageCount, files: fileCount, failed: errCount };
       setStatus('done — ' + s.pages + ' pages · ' + s.files + ' files · ' + s.failed + ' errors');
       stop('');
+      if (mapOpen) renderMap();
       if (s.files === 0) {
         const tr = document.createElement('tr');
         const td = document.createElement('td');
@@ -198,6 +267,7 @@
     }
   }
 
+  /* ===== table ===== */
   function addRow(f) {
     fileCount++;
     rowCount++;
@@ -270,6 +340,192 @@
     const q = filterIn.value.trim().toLowerCase();
     if (!q || !tr.dataset.search) { tr.style.display = ''; return; }
     tr.style.display = tr.dataset.search.indexOf(q) === -1 ? 'none' : '';
+  }
+
+  /* ===== map: data collection ===== */
+  function registerMap(f) {
+    if (!f || !f.host) return;
+    const h = String(f.host).toLowerCase();
+
+    nodes.set(h, (nodes.get(h) || 0) + 1);
+
+    if (!rootHost) rootHost = stripWww(h);
+    if (h === rootHost) return;
+    if (edges.has(h)) return;
+
+    const pageHost = hostOf(f.page);
+
+    if (pageHost && pageHost !== h && pageHost !== rootHost && isInScope(pageHost)) {
+      // found on a page of another in-scope host → attach there
+      if (!nodes.has(pageHost)) nodes.set(pageHost, 0);
+      if (pageHost !== rootHost && !edges.has(pageHost)) edges.set(pageHost, rootHost);
+      edges.set(h, pageHost);
+    } else {
+      edges.set(h, rootHost);
+    }
+  }
+
+  /* ===== map: toggle ===== */
+  function toggleMap(force) {
+    mapOpen = (typeof force === 'boolean') ? force : !mapOpen;
+    mapPanel.hidden = !mapOpen;
+    mapBtn.classList.toggle('on', mapOpen);
+    if (mapOpen) {
+      if (!rootHost) {
+        rootHost = hostOf(scopeIn.value) || stripWww(hostOf(urlIn.value)) || '';
+      }
+      renderMap();
+    }
+  }
+
+  /* ===== map: render ===== */
+  function renderMap() {
+    while (mapSvg.firstChild) mapSvg.removeChild(mapSvg.firstChild);
+
+    if (!rootHost) {
+      placeholder('no data — run a crawl');
+      return;
+    }
+    if (!nodes.has(rootHost)) nodes.set(rootHost, 0);
+
+    // build children map
+    const children = new Map();
+    nodes.forEach(function (_, h) { children.set(h, []); });
+    edges.forEach(function (parent, child) {
+      if (!children.has(parent)) children.set(parent, []);
+      if (!children.has(child)) children.set(child, []);
+      children.get(parent).push(child);
+    });
+
+    // BFS into levels
+    const levels = [];
+    const visited = new Set([rootHost]);
+    let cur = [rootHost];
+    let guard = 0;
+    while (cur.length && guard++ < 50) {
+      levels.push(cur);
+      const next = [];
+      for (let i = 0; i < cur.length; i++) {
+        const kids = children.get(cur[i]) || [];
+        for (let j = 0; j < kids.length; j++) {
+          const c = kids[j];
+          if (!visited.has(c)) { visited.add(c); next.push(c); }
+        }
+      }
+      cur = next;
+    }
+
+    // attach orphans (shouldn't normally happen)
+    const orphans = [];
+    nodes.forEach(function (_, h) { if (!visited.has(h)) orphans.push(h); });
+    if (orphans.length) {
+      if (levels.length < 2) levels.push(orphans);
+      else levels[1] = levels[1].concat(orphans);
+    }
+
+    const NODE_H = 26, ROW_H = 78, PAD = 24, GAP = 22;
+
+    const labelOf = function (h) { return h + '  ' + (nodes.get(h) || 0); };
+    const widths = levels.map(function (row) {
+      return row.map(function (h) { return Math.max(64, labelOf(h).length * 6.5 + 22); });
+    });
+    const rowW = widths.map(function (r) {
+      return r.reduce(function (a, b) { return a + b; }, 0) + GAP * Math.max(0, r.length - 1);
+    });
+
+    const maxRow = rowW.length ? Math.max.apply(null, rowW) : 360;
+    const W = Math.max(360, maxRow) + PAD * 2;
+    const H = PAD * 2 + NODE_H + (levels.length - 1) * ROW_H;
+
+    mapSvg.setAttribute('width', W);
+    mapSvg.setAttribute('height', H);
+    mapSvg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+
+    // positions
+    const pos = new Map();
+    levels.forEach(function (row, li) {
+      let x = (W - rowW[li]) / 2;
+      const y = PAD + li * ROW_H;
+      row.forEach(function (h, i) {
+        const w = widths[li][i];
+        pos.set(h, { cx: x + w / 2, y: y, w: w });
+        x += w + GAP;
+      });
+    });
+
+    // edges (lines) first
+    edges.forEach(function (parent, child) {
+      const p = pos.get(parent), c = pos.get(child);
+      if (!p || !c) return;
+      const line = document.createElementNS(NS, 'line');
+      line.setAttribute('x1', p.cx);
+      line.setAttribute('y1', p.y + NODE_H);
+      line.setAttribute('x2', c.cx);
+      line.setAttribute('y2', c.y);
+      line.setAttribute('stroke', '#111');
+      line.setAttribute('stroke-width', '1');
+      mapSvg.appendChild(line);
+    });
+
+    // nodes
+    pos.forEach(function (p, h) {
+      const isRoot = (h === rootHost);
+      const g = document.createElementNS(NS, 'g');
+
+      const rect = document.createElementNS(NS, 'rect');
+      rect.setAttribute('x', p.cx - p.w / 2);
+      rect.setAttribute('y', p.y);
+      rect.setAttribute('width', p.w);
+      rect.setAttribute('height', NODE_H);
+      rect.setAttribute('class', 'node' + (isRoot ? ' root' : ''));
+      rect.setAttribute('fill', isRoot ? '#111' : '#fff');
+      rect.setAttribute('stroke', '#111');
+      rect.setAttribute('stroke-width', '1.5');
+
+      const txt = document.createElementNS(NS, 'text');
+      txt.setAttribute('x', p.cx);
+      txt.setAttribute('y', p.y + NODE_H / 2 + 4);
+      txt.setAttribute('text-anchor', 'middle');
+      txt.setAttribute('fill', isRoot ? '#fff' : '#111');
+
+      const s1 = document.createElementNS(NS, 'tspan');
+      s1.textContent = h;
+
+      const s2 = document.createElementNS(NS, 'tspan');
+      s2.setAttribute('fill', isRoot ? '#888' : '#767676');
+      s2.textContent = '  ' + (nodes.get(h) || 0);
+
+      txt.appendChild(s1);
+      txt.appendChild(s2);
+
+      const title = document.createElementNS(NS, 'title');
+      title.textContent = h + ' — ' + (nodes.get(h) || 0) + ' file(s) · click to filter';
+
+      g.appendChild(rect);
+      g.appendChild(txt);
+      g.appendChild(title);
+
+      g.addEventListener('click', function () {
+        filterIn.value = h;
+        applyFilter();
+      });
+
+      mapSvg.appendChild(g);
+    });
+  }
+
+  function placeholder(msg) {
+    const W = 420, H = 100;
+    mapSvg.setAttribute('width', W);
+    mapSvg.setAttribute('height', H);
+    mapSvg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+    const t = document.createElementNS(NS, 'text');
+    t.setAttribute('x', W / 2);
+    t.setAttribute('y', H / 2 + 4);
+    t.setAttribute('text-anchor', 'middle');
+    t.setAttribute('fill', '#767676');
+    t.textContent = msg;
+    mapSvg.appendChild(t);
   }
 })();
 </script>
