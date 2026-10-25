@@ -21,24 +21,26 @@
   header .note{ color:var(--muted); font-size:12px; }
 
   form{ display:flex; flex-wrap:wrap; border-bottom:1px solid var(--line); }
-  form input{
+  form input[type=text], form input[type=url]{
     flex:1 1 180px; min-width:0; border:0; border-right:1px solid var(--soft);
     padding:10px 12px; font:inherit; color:inherit; background:transparent; outline:none;
   }
-  form input:focus{ background:#fafafa; box-shadow:inset 0 -2px 0 var(--accent); }
-  form input[type=number]{ flex:0 0 90px; text-align:center; }
+  form input[type=text]:focus, form input[type=url]:focus{ background:#fafafa; box-shadow:inset 0 -2px 0 var(--accent); }
+  form input[type=number]{ flex:0 0 90px; text-align:center; border:0; border-right:1px solid var(--soft); padding:10px 12px; font:inherit; background:transparent; outline:none; }
+  
+  .form-btn-group { display:flex; flex-direction:column; border-left:1px solid var(--line); }
   form button{
-    border:0; border-left:1px solid var(--line); background:var(--fg); color:#fff;
+    border:0; background:var(--fg); color:#fff;
     padding:10px 20px; font:inherit; letter-spacing:2px; text-transform:uppercase;
-    cursor:pointer;
+    cursor:pointer; flex:1;
   }
   form button:hover:not(:disabled){ background:var(--accent); }
   form button:disabled{ background:#bbb; cursor:not-allowed; }
-  form button#stop{ background:#fff; color:var(--fg); }
+  form button#stop{ background:#fff; color:var(--fg); border-bottom:1px solid var(--soft); }
   form button#stop:hover:not(:disabled){ background:var(--accent); color:#fff; }
   form button#continue{ background:#fff; color:var(--fg); }
   form button#continue:hover:not(:disabled){ background:var(--accent); color:#fff; }
-  form button#continue:disabled{ background:#fff; color:#bbb; cursor:not-allowed; }
+  form button#continue:disabled{ background:#fff; color:#bbb; }
 
   #bar{ display:flex; align-items:center; gap:12px; padding:8px 16px; border-bottom:1px solid var(--soft); }
   #status{ color:var(--muted); flex:1; }
@@ -47,6 +49,9 @@
     background:transparent; outline:none; width:220px;
   }
   #filter:focus{ border-color:var(--line); }
+  
+  .auto-cont { display:flex; align-items:center; gap:6px; font-size:11px; color:var(--muted); cursor:pointer; user-select:none; }
+  .auto-cont input { margin:0; cursor:pointer; }
 
   #tabs{ display:flex; border-bottom:1px solid var(--line); background:#fff; }
   #tabs button{
@@ -120,20 +125,22 @@
   #map:active{ cursor:grabbing; }
 
   #map .node{ cursor:pointer; transition:opacity .15s ease; }
+  
   #map .node text{ 
     transition:opacity .15s ease; 
     paint-order: stroke;
     stroke: #fafafa;
-    stroke-width: 3px;
+    stroke-width: 2.5px;
     stroke-linejoin: round;
   }
+  
   #map .node.dim{ opacity:.16; }
   #map .node.dim text{ opacity:0; }
   #map .node:hover .dot{ stroke:var(--accent); }
   #map .node.selected .dot{ stroke:var(--accent); stroke-width:2.5; }
 
-  /* Hide labels when zoomed out, except for audio nodes or selected/hovered */
-  #map.low-zoom .node:not(.has-files):not(.selected) text { opacity: 0; }
+  /* Faint labels when zoomed out */
+  #map.low-zoom .node:not(.has-files):not(.selected) text { opacity: 0.25; }
   #map.low-zoom .node:hover text { opacity: 1 !important; }
 
   #map .edge{ stroke:#d9d9d9; stroke-width:1.2; fill:none; transition:opacity .15s ease, stroke .15s ease; }
@@ -209,17 +216,20 @@
 </header>
 
 <form id="form">
-  <input id="url" placeholder="https://example.com" required spellcheck="false" autocomplete="off">
-  <input id="scope" placeholder="scope domain (auto)" spellcheck="false" autocomplete="off">
-  <input id="pages" type="number" value="40" min="1" max="2000" title="max pages">
-  <input id="depth" type="number" value="3" min="0" max="10" title="max depth">
-  <button id="go" type="submit">crawl</button>
-  <button id="stop" type="button" disabled>stop</button>
-  <button id="continue" type="button" disabled>continue +1 worker</button>
+  <input id="url" type="url" placeholder="https://example.com" required spellcheck="false" autocomplete="off">
+  <input id="scope" type="text" placeholder="scope domain (auto)" spellcheck="false" autocomplete="off">
+  <input id="pages" type="number" value="40" min="1" max="2000" title="max pages per worker">
+  <input id="depth" type="number" value="10" min="0" title="max depth">
+  <div class="form-btn-group">
+    <button id="go" type="submit">crawl</button>
+    <button id="stop" type="button" disabled>stop</button>
+    <button id="continue" type="button" disabled>continue +1 worker</button>
+  </div>
 </form>
 
 <div id="bar">
   <span id="status">idle</span>
+  <label class="auto-cont"><input type="checkbox" id="autoContinue"> auto-continue</label>
   <input id="filter" placeholder="filter…" spellcheck="false" autocomplete="off">
 </div>
 
@@ -266,7 +276,7 @@
   const form = $('#form'), urlIn = $('#url'), scopeIn = $('#scope'),
         pagesIn = $('#pages'), depthIn = $('#depth'),
         goBtn = $('#go'), stopBtn = $('#stop'), continueBtn = $('#continue'),
-        statusEl = $('#status'),
+        autoContinueCb = $('#autoContinue'), statusEl = $('#status'),
         tbody = $('#tbody'), player = $('#player'), audio = $('#audio'),
         nowPlaying = $('#nowplaying'), filterIn = $('#filter'),
         tabsNav = $('#tabs'), logsEl = $('#logs'), mapSvg = $('#map'),
@@ -285,7 +295,6 @@
   let originUrl = '';
   const pageNodes = new Map();
 
-  // Continue-with-new-worker state
   let pendingResume = null;
   let lockedParams = null;
 
@@ -343,7 +352,6 @@
 
     pageNodes.clear();
 
-    // reset map state
     selectedUrl = null;
     hoverUrl = null;
     view.scale = 1; view.tx = 0; view.ty = 0;
@@ -494,6 +502,11 @@
         continueBtn.disabled = false;
         continueBtn.textContent = 'continue +1 worker (' + m.resume.queue.length + ' queued)';
         addLog('info', m.resume.queue.length + ' URLs still queued — click continue to spin up a new worker');
+        
+        if (autoContinueCb.checked) {
+          addLog('info', 'auto-continue triggered…');
+          setTimeout(continueCrawl, 1000);
+        }
       } else {
         pendingResume = null;
         continueBtn.disabled = true;
@@ -509,7 +522,6 @@
         tr.appendChild(td); tbody.appendChild(tr);
       }
       
-      // Auto fit on finish
       if (panels.map.classList.contains('active')) {
         requestAnimationFrame(() => { drawMap(); fitView(); });
       }
@@ -574,7 +586,7 @@
     nowPlaying.title = f.url;
     audio.src = '/api/file?url=' + encodeURIComponent(f.url);
     const p = audio.play();
-    if (p && p.catch) p.catch(function () { /* autoplay blocked or codec issue */ });
+    if (p && p.catch) p.catch(function () { });
   }
 
   function downloadFile(f) {
@@ -616,7 +628,6 @@
       viewportEl.setAttribute('transform',
         'translate(' + view.tx + ',' + view.ty + ') scale(' + view.scale + ')');
     }
-    // Toggle label visibility based on zoom level
     if (mapSvg) {
       mapSvg.classList.toggle('low-zoom', view.scale < 0.65);
     }
@@ -907,7 +918,6 @@
     const cx = W / 2, cy = H / 2;
     const maxDepth = Math.max(...nodes.map(n => n.depth), 0);
 
-    // 1. Initial radial layout (only applies to newly added nodes)
     const rings = Array.from({ length: maxDepth + 1 }, () => []);
     nodes.forEach(n => rings[n.depth].push(n));
     rings.forEach(ring => ring.sort((a, b) => (a.source || '').localeCompare(b.source || '')));
@@ -931,7 +941,6 @@
       });
     });
 
-    // 2. Force simulation to resolve overlaps
     const iterations = 80;
     const k = Math.sqrt((W * H) / Math.max(nodes.length, 1)) * 0.8;
 
@@ -944,7 +953,6 @@
     });
 
     for (let iter = 0; iter < iterations; iter++) {
-      // Repulsion (Global to prevent clumping)
       for (let j = 0; j < nodes.length; j++) {
         const n1 = nodes[j];
         for (let l = j + 1; l < nodes.length; l++) {
@@ -956,7 +964,7 @@
 
           let dist = Math.sqrt(distSq);
           let force = (k * k) / distSq;
-          if (force > k * 2) force = k * 2; // Cap to avoid explosion for overlapping nodes
+          if (force > k * 2) force = k * 2;
 
           if (n1.depth === 0) {
             n2.vx += (dx / dist) * force * 2;
@@ -973,12 +981,11 @@
         }
       }
 
-      // Spring attraction
       validEdges.forEach(e => {
         let dx = e.target.x - e.source.x;
         let dy = e.target.y - e.source.y;
         let dist = Math.sqrt(dx * dx + dy * dy) || 1;
-        let targetLen = k * 1.5; // Slightly stretched links
+        let targetLen = k * 1.5;
         let force = (dist - targetLen) * 0.05;
         let fx = (dx / dist) * force;
         let fy = (dy / dist) * force;
@@ -987,7 +994,6 @@
         if (e.target.depth !== 0) { e.target.vx -= fx; e.target.vy -= fy; }
       });
 
-      // Weak Gravity towards center
       nodes.forEach(n => {
         if (n.depth === 0) return;
         let dx = cx - n.x;
@@ -996,22 +1002,18 @@
         n.vy += dy * 0.005;
       });
 
-      // Update positions
       nodes.forEach(n => {
         if (n.depth === 0) return;
-
-        n.vx *= 0.6; // Friction
+        n.vx *= 0.6;
         n.vy *= 0.6;
         n.x += n.vx;
         n.y += n.vy;
       });
     }
 
-    // viewport group (everything inside it pans / zooms)
     viewportEl = make('g', {});
     mapSvg.appendChild(viewportEl);
 
-    // Edges (curved)
     validEdges.forEach(e => {
       const dx = e.target.x - e.source.x;
       const dy = e.target.y - e.source.y;
@@ -1026,7 +1028,6 @@
       }));
     });
 
-    // Nodes
     nodes.forEach(node => {
       const isRoot = node.depth === 0;
       const fc = node.files.length;
@@ -1039,7 +1040,6 @@
 
       const g = make('g', { 'class': 'node' + (hasFiles ? ' has-files' : ''), 'data-url': node.url });
 
-      // Hover events
       g.addEventListener('pointerenter', () => {
         hoverUrl = node.url;
         updateHighlight();
@@ -1049,7 +1049,6 @@
         updateHighlight();
       });
 
-      // invisible hit area so tiny nodes are still easy to click
       g.appendChild(make('circle', {
         cx: node.x, cy: node.y, r: Math.max(12, r * 3), fill: 'transparent'
       }));
@@ -1098,7 +1097,6 @@
       viewportEl.appendChild(g);
     });
 
-    // Legend (fixed)
     const legend = make('g', { transform: 'translate(16, 16)' });
 
     legend.appendChild(make('circle', { cx: 6, cy: 6, r: 5, fill: '#ff3b00' }));
