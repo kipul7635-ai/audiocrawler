@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>audiocrawler</title>
+<style>
+  :root{
+    --fg:#111; --bg:#fff; --line:#111; --soft:#d9d9d9;
+    --muted:#767676; --accent:#ff3b00; --hover:#f1f1f1;
+  }
+  *{ box-sizing:border-box; border-radius:0 !important; }
+  html,body{ margin:0; height:100%; }
+  body{
+    background:var(--bg); color:var(--fg);
+    font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+    padding-bottom:64px;
+  }
+  header{ display:flex; align-items:baseline; gap:16px; padding:14px 16px; border-bottom:2px solid var(--line); }
+  header h1{ margin:0; font-size:15px; letter-spacing:3px; text-transform:uppercase; font-weight:700; }
+  header .note{ color:var(--muted); font-size:12px; }
+
+  form{ display:flex; flex-wrap:wrap; border-bottom:1px solid var(--line); }
+  form input{
+    flex:1 1 180px; min-width:0; border:0; border-right:1px solid var(--soft);
+    padding:10px 12px; font:inherit; color:inherit; background:transparent; outline:none;
+  }
+  form input:focus{ background:#fafafa; box-shadow:inset 0 -2px 0 var(--accent); }
+  form input[type=number]{ flex:0 0 90px; text-align:center; }
+  form button{
+    border:0; border-left:1px solid var(--line); background:var(--fg); color:#fff;
+    padding:10px 20px; font:inherit; letter-spacing:2px; text-transform:uppercase;
+    cursor:pointer;
+  }
+  form button:hover:not(:disabled){ background:var(--accent); }
+  form button:disabled{ background:#bbb; cursor:not-allowed; }
+  form button#stop{ background:#fff; color:var(--fg); }
+  form button#stop:hover:not(:disabled){ background:var(--accent); color:#fff; }
+
+  #bar{ display:flex; align-items:center; gap:12px; padding:8px 16px; border-bottom:1px solid var(--soft); }
+  #status{ color:var(--muted); flex:1; }
+  #filter{
+    border:1px solid var(--soft); padding:5px 8px; font:inherit; color:inherit;
+    background:transparent; outline:none; width:220px;
+  }
+  #filter:focus{ border-color:var(--line); }
+
+  table{ width:100%; border-collapse:collapse; }
+  th,td{ text-align:left; padding:6px 12px; border-bottom:1px solid #eee; vertical-align:top; }
+  th{
+    font-size:11px; letter-spacing:2px; text-transform:uppercase; color:var(--muted);
+    font-weight:400; border-bottom:1px solid var(--line); background:#fff;
+  }
+  tbody tr:hover{ background:var(--hover); }
+  tbody tr.playing{ background:#fff2ee; box-shadow:inset 3px 0 0 var(--accent); }
+  .trunc{ max-width:420px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  td.host{ color:var(--accent); white-space:nowrap; }
+  td.name{ font-weight:700; }
+  td.page{ color:var(--muted); }
+  td.act{ white-space:nowrap; text-align:right; }
+  button.mini{
+    border:1px solid var(--line); background:#fff; color:var(--fg);
+    font:inherit; font-size:11px; letter-spacing:1px; padding:3px 9px;
+    cursor:pointer; margin-left:6px;
+  }
+  button.mini:hover{ background:var(--fg); color:#fff; }
+  button.mini.alt:hover{ background:var(--accent); border-color:var(--accent); color:#fff; }
+
+  #player{
+    position:fixed; left:0; right:0; bottom:0; display:flex; align-items:center; gap:12px;
+    padding:10px 16px; background:#fff; border-top:2px solid var(--line);
+  }
+  #player[hidden]{ display:none; }
+  #nowplaying{ flex:0 1 320px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #audio{ flex:1; height:32px; min-width:200px; }
+  #closePlayer{
+    border:1px solid var(--line); background:#fff; color:var(--fg);
+    font:inherit; padding:4px 10px; cursor:pointer;
+  }
+  #closePlayer:hover{ background:var(--fg); color:#fff; }
+  .empty{ padding:24px 16px; color:var(--muted); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>audiocrawler</h1>
+  <span class="note">crawl a site + its subdomains for audio files</span>
+</header>
+
+<form id="form">
+  <input id="url" placeholder="https://example.com" required spellcheck="false" autocomplete="off">
+  <input id="scope" placeholder="scope domain (auto)" spellcheck="false" autocomplete="off">
+  <input id="pages" type="number" value="100" min="1" max="2000" title="max pages">
+  <input id="depth" type="number" value="3" min="0" max="10" title="max depth">
+  <button id="go" type="submit">crawl</button>
+  <button id="stop" type="button" disabled>stop</button>
+</form>
+
+<div id="bar">
+  <span id="status">idle</span>
+  <input id="filter" placeholder="filter…" spellcheck="false" autocomplete="off">
+</div>
+
+<table>
+  <thead>
+    <tr><th>host</th><th>file</th><th>found on</th><th></th></tr>
+  </thead>
+  <tbody id="tbody"></tbody>
+</table>
+
+<footer id="player" hidden>
+  <span id="nowplaying">—</span>
+  <audio id="audio" controls preload="none"></audio>
+  <button id="closePlayer" type="button">×</button>
+</footer>
+
+<script>
+(function () {
+  'use strict';
+
+  const $ = (s) => document.querySelector(s);
+  const form = $('#form'), urlIn = $('#url'), scopeIn = $('#scope'),
+        pagesIn = $('#pages'), depthIn = $('#depth'),
+        goBtn = $('#go'), stopBtn = $('#stop'), statusEl = $('#status'),
+        tbody = $('#tbody'), player = $('#player'), audio = $('#audio'),
+        nowPlaying = $('#nowplaying'), filterIn = $('#filter');
+
+  let es = null, finished = false, pageCount = 0, fileCount = 0, errCount = 0, rowCount = 0;
+
+  form.addEventListener('submit', function (e) { e.preventDefault(); begin(); });
+  stopBtn.addEventListener('click', function () { stop('stopped'); });
+  filterIn.addEventListener('input', applyFilter);
+  $('#closePlayer').addEventListener('click', function () {
+    audio.pause(); audio.removeAttribute('src'); audio.load();
+    player.hidden = true;
+    document.querySelectorAll('tr.playing').forEach(function (r) { r.classList.remove('playing'); });
+  });
+
+  function setStatus(t) { statusEl.textContent = t; }
+
+  function begin() {
+    stop('');
+    finished = false; pageCount = 0; fileCount = 0; errCount = 0; rowCount = 0;
+    tbody.textContent = '';
+    player.hidden = true;
+    audio.pause(); audio.removeAttribute('src');
+
+    const params = new URLSearchParams({
+      url: urlIn.value.trim(),
+      scope: scopeIn.value.trim(),
+      maxPages: pagesIn.value,
+      maxDepth: depthIn.value
+    });
+
+    setStatus('connecting…');
+    goBtn.disabled = true;
+    stopBtn.disabled = false;
+
+    es = new EventSource('/api/crawl?' + params.toString());
+    es.onmessage = onMessage;
+    es.onerror = function () {
+      if (finished || !es) return;
+      stop('connection lost');
+    };
+  }
+
+  function stop(msg) {
+    if (es) { es.close(); es = null; }
+    goBtn.disabled = false;
+    stopBtn.disabled = true;
+    if (msg) setStatus(msg);
+  }
+
+  function onMessage(ev) {
+    let m;
+    try { m = JSON.parse(ev.data); } catch (_) { return; }
+
+    if (m.type === 'page') {
+      pageCount++;
+      setStatus('scanning — ' + pageCount + ' pages · ' + fileCount + ' files');
+    } else if (m.type === 'file') {
+      addRow(m.file);
+    } else if (m.type === 'error') {
+      errCount++;
+    } else if (m.type === 'done') {
+      finished = true;
+      const s = m.stats || { pages: pageCount, files: fileCount, failed: errCount };
+      setStatus('done — ' + s.pages + ' pages · ' + s.files + ' files · ' + s.failed + ' errors');
+      stop('');
+      if (s.files === 0) {
+        const tr = document.createElement('tr');
+        const td = document.createElement('td');
+        td.colSpan = 4; td.className = 'empty';
+        td.textContent = 'no audio files found (try raising depth / max pages, or set a scope domain)';
+        tr.appendChild(td); tbody.appendChild(tr);
+      }
+    }
+  }
+
+  function addRow(f) {
+    fileCount++;
+    rowCount++;
+    const tr = document.createElement('tr');
+
+    const tdHost = document.createElement('td');
+    tdHost.className = 'host';
+    tdHost.textContent = f.host;
+
+    const tdName = document.createElement('td');
+    tdName.className = 'name trunc';
+    tdName.textContent = f.name;
+    tdName.title = f.url;
+
+    const tdPage = document.createElement('td');
+    tdPage.className = 'page trunc';
+    tdPage.textContent = f.page;
+    tdPage.title = f.page;
+
+    const tdAct = document.createElement('td');
+    tdAct.className = 'act';
+
+    const playBtn = document.createElement('button');
+    playBtn.type = 'button'; playBtn.className = 'mini'; playBtn.textContent = 'play';
+    playBtn.addEventListener('click', function () { playFile(f, tr); });
+
+    const dlBtn = document.createElement('button');
+    dlBtn.type = 'button'; dlBtn.className = 'mini alt'; dlBtn.textContent = 'download';
+    dlBtn.addEventListener('click', function () { downloadFile(f); });
+
+    tdAct.appendChild(playBtn);
+    tdAct.appendChild(dlBtn);
+
+    tr.appendChild(tdHost);
+    tr.appendChild(tdName);
+    tr.appendChild(tdPage);
+    tr.appendChild(tdAct);
+    tr.dataset.search = (f.host + ' ' + f.name + ' ' + f.url + ' ' + f.page).toLowerCase();
+
+    tbody.appendChild(tr);
+    applyFilterTo(tr);
+    setStatus('scanning — ' + pageCount + ' pages · ' + fileCount + ' files');
+  }
+
+  function playFile(f, tr) {
+    document.querySelectorAll('tr.playing').forEach(function (r) { r.classList.remove('playing'); });
+    tr.classList.add('playing');
+    player.hidden = false;
+    nowPlaying.textContent = f.host + ' / ' + f.name;
+    nowPlaying.title = f.url;
+    audio.src = '/api/file?url=' + encodeURIComponent(f.url);
+    const p = audio.play();
+    if (p && p.catch) p.catch(function () { /* autoplay blocked or codec issue */ });
+  }
+
+  function downloadFile(f) {
+    const a = document.createElement('a');
+    a.href = '/api/file?dl=1&url=' + encodeURIComponent(f.url);
+    a.download = f.name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
+
+  function applyFilter() {
+    document.querySelectorAll('#tbody tr').forEach(applyFilterTo);
+  }
+
+  function applyFilterTo(tr) {
+    const q = filterIn.value.trim().toLowerCase();
+    if (!q || !tr.dataset.search) { tr.style.display = ''; return; }
+    tr.style.display = tr.dataset.search.indexOf(q) === -1 ? 'none' : '';
+  }
+})();
+</script>
+</body>
+</html>
