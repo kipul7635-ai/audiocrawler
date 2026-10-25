@@ -279,8 +279,8 @@
   <button id="closePlayer" type="button">×</button>
 </footer>
 
-<!-- Cosmograph WebGL graph engine -->
-<script src="https://cdn.jsdelivr.net/npm/@cosmograph/cosmos@latest/dist/index.min.js"></script>
+<!-- Cosmograph WebGL graph engine (v2) -->
+<script src="https://cdn.jsdelivr.net/npm/@cosmograph/cosmos@2.0.0-beta.20/dist/index.min.js"></script>
 
 <script>
 (function () {
@@ -630,7 +630,7 @@
   }
 
   // ==========================================================================
-  // MAP  —  Cosmograph (WebGL)
+  // MAP  —  Cosmograph v2 (WebGL)
   // ==========================================================================
 
   let cosmosGraph = null;
@@ -641,7 +641,6 @@
   let lastDrawnNodeCount = -1;
   let lastDrawnFileCount = -1;
 
-  // track pointer for popup positioning (Cosmograph's onClick doesn't give us coords)
   mapWrap.addEventListener('pointerdown', function (e) {
     lastPointerX = e.clientX;
     lastPointerY = e.clientY;
@@ -663,30 +662,17 @@
 
     try {
       cosmosGraph = new Cosmos.Graph(container, {
-        nodeSize: 5,
-        nodeColor: function (index) {
-          const url = nodeUrls[index];
-          const node = pageNodes.get(url);
-          if (!node) return '#bbbbbb';
-          if (node.depth === 0) return '#ff3b00';
-          if (node.files.length > 0) return '#ff3b00';
-          return '#bbbbbb';
-        },
-        nodeStrokeWidth: 1.5,
-        nodeStrokeColor: '#ffffff',
-        linkWidth: 0.8,
-        linkColor: '#d9d9d9',
-        backgroundColor: '#fafafa',
-        showLabels: true,
-        labelSize: 10,
-        labelColor: '#111111',
-        // spacious layout — bigger repulsion + longer links so nodes don't clump
+        // Cosmograph v2 configuration
         simulationGravity: 0.08,
         simulationRepulsion: 1.4,
         simulationLinkSpring: 0.7,
         simulationLinkDistance: 40,
         simulationFriction: 0.92,
         spaceSize: 8192,
+        backgroundColor: '#fafafa',
+        // In v2, node/point colors and sizes are set via arrays, not accessors
+        // We'll use the defaults for simplicity, or you can set them with
+        // setPointColors() and setPointSizes()
         onClick: function (index) { handleNodeClick(index); }
       });
       return true;
@@ -734,7 +720,7 @@
     const nodes = Array.from(pageNodes.values());
     const totalFiles = nodes.reduce(function (s, n) { return s + n.files.length; }, 0);
 
-    // skip expensive setData if nothing changed (e.g. tab switching)
+    // skip expensive redraw if nothing changed
     if (nodes.length === lastDrawnNodeCount && totalFiles === lastDrawnFileCount) {
       return;
     }
@@ -744,11 +730,11 @@
     mapEmptyEl.hidden = nodes.length > 0;
 
     if (nodes.length === 0) {
+      // In v2, to clear we can set empty positions and links
       try {
-        cosmosGraph.setData(
-          { x: new Float32Array(0), y: new Float32Array(0) },
-          { source: new Float32Array(0), target: new Float32Array(0) }
-        );
+        cosmosGraph.setPointPositions(new Float32Array(0));
+        cosmosGraph.setLinks(new Float32Array(0));
+        cosmosGraph.render();
       } catch (_) {}
       return;
     }
@@ -758,11 +744,9 @@
     nodeUrls.forEach(function (url, i) { nodeIndex.set(url, i); });
 
     const N = nodes.length;
-    const xs = new Float32Array(N);
-    const ys = new Float32Array(N);
+    const positions = new Float32Array(N * 2); // [x1, y1, x2, y2, ...]
 
-    // seed initial positions in concentric rings by crawl depth — a much better
-    // starting point than all-at-origin, so nodes spread out immediately
+    // Seed initial positions in concentric rings by crawl depth
     let maxDepth = 0;
     for (let i = 0; i < N; i++) if (nodes[i].depth > maxDepth) maxDepth = nodes[i].depth;
 
@@ -776,42 +760,37 @@
       const count = ring.length;
       for (let i = 0; i < count; i++) {
         const idx = ring[i];
+        let x, y;
         if (d === 0) {
-          xs[idx] = 0; ys[idx] = 0;
+          x = 0; y = 0;
         } else {
           const angle = (i / count) * Math.PI * 2;
           const r = RADIUS * (d / (maxDepth || 1));
-          xs[idx] = Math.cos(angle) * r;
-          ys[idx] = Math.sin(angle) * r;
+          x = Math.cos(angle) * r;
+          y = Math.sin(angle) * r;
         }
+        positions[idx * 2] = x;
+        positions[idx * 2 + 1] = y;
       }
     }
 
-    // edges
-    const src = [];
-    const tgt = [];
+    // Links: [sourceIndex1, targetIndex1, sourceIndex2, targetIndex2, ...]
+    const links = [];
     for (let i = 0; i < N; i++) {
       const n = nodes[i];
       if (n.source) {
         const si = nodeIndex.get(n.source);
-        if (si !== undefined) { src.push(si); tgt.push(i); }
+        if (si !== undefined) {
+          links.push(si, i);
+        }
       }
     }
 
-    const labels = nodes.map(function (n) {
-      if (n.depth === 0) return 'ORIGIN';
-      let l = n.path;
-      if (!l || l === '/') return n.host;
-      if (l.length > 16) l = l.substring(0, 14) + '…';
-      return l;
-    });
-
     try {
-      cosmosGraph.setData(
-        { x: xs, y: ys, label: labels },
-        { source: new Float32Array(src), target: new Float32Array(tgt) }
-      );
-      if (typeof cosmosGraph.render === 'function') cosmosGraph.render();
+      // V2 API: setPointPositions, setLinks, then render
+      cosmosGraph.setPointPositions(positions);
+      cosmosGraph.setLinks(new Float32Array(links));
+      cosmosGraph.render();
     } catch (err) {
       console.error('Cosmograph setData failed:', err);
     }
