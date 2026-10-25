@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>audiocrawler</title>
+<!-- Cosmos WebGL Graph Library -->
+<script src="https://cdn.jsdelivr.net/npm/@cosmograph/cosmos@latest/dist/index.min.js"></script>
 <style>
   :root{
     --fg:#111; --bg:#fff; --line:#111; --soft:#d9d9d9;
@@ -109,6 +111,8 @@
   /* ---------------- map ---------------- */
   #panel-map{ padding:16px; position:relative; }
   #map-wrap{ position:relative; }
+  
+  /* Changed from SVG to Canvas container */
   #map{
     display:block;
     width:100%;
@@ -118,40 +122,15 @@
     border:1px solid var(--soft);
     overflow:hidden;
     touch-action:none;
-    cursor:grab;
-    user-select:none;
-    -webkit-user-select:none;
   }
-  #map:active{ cursor:grabbing; }
-
-  #map .node{ cursor:pointer; transition:opacity .15s ease; }
-  
-  #map .node text{ 
-    transition:opacity .15s ease; 
-    paint-order: stroke;
-    stroke: #fafafa;
-    stroke-width: 2.5px;
-    stroke-linejoin: round;
-  }
-  
-  #map .node.dim{ opacity:.16; }
-  #map .node.dim text{ opacity:0; }
-  #map .node:hover .dot{ stroke:var(--accent); }
-  #map .node.selected .dot{ stroke:var(--accent); stroke-width:2.5; }
-
-  /* Faint labels when zoomed out */
-  #map.low-zoom .node:not(.has-files):not(.selected) text { opacity: 0.25; }
-  #map.low-zoom .node:hover text { opacity: 1 !important; }
-
-  #map .edge{ stroke:#d9d9d9; stroke-width:1.2; fill:none; transition:opacity .15s ease, stroke .15s ease; }
-  #map .edge.dim{ opacity:.1; }
-  #map .edge.path{ stroke:var(--accent); stroke-width:1.5; }
 
   .map-ctrl {
     position:absolute; top:16px; right:16px; z-index:10;
     display:flex; gap:8px;
+    pointer-events: none; /* Let clicks pass through to canvas */
   }
   .map-ctrl button {
+    pointer-events: auto;
     border:1px solid var(--line); background:#fff; color:var(--fg);
     font:inherit; font-size:11px; padding:6px 10px; letter-spacing:1px; text-transform:uppercase;
     cursor:pointer; box-shadow:2px 2px 0 rgba(0,0,0,0.05);
@@ -257,7 +236,8 @@
     <div class="map-ctrl">
       <button id="btn-fit" type="button">Fit</button>
     </div>
-    <svg id="map" xmlns="http://www.w3.org/2000/svg"></svg>
+    <!-- Replaced SVG with a container for Cosmos -->
+    <div id="map"></div>
     <div id="node-popup" hidden></div>
   </div>
 </section>
@@ -279,7 +259,8 @@
         autoContinueCb = $('#autoContinue'), statusEl = $('#status'),
         tbody = $('#tbody'), player = $('#player'), audio = $('#audio'),
         nowPlaying = $('#nowplaying'), filterIn = $('#filter'),
-        tabsNav = $('#tabs'), logsEl = $('#logs'), mapSvg = $('#map'),
+        tabsNav = $('#tabs'), logsEl = $('#logs'), 
+        mapContainer = $('#map'),
         mapWrap = $('#map-wrap'), popupEl = $('#node-popup'),
         fitBtn = $('#btn-fit');
 
@@ -298,11 +279,18 @@
   let pendingResume = null;
   let lockedParams = null;
 
+  // Map State
+  let cosmosInstance = null;
+  let nodeIndexMap = new Map(); // Maps URL -> index in Cosmos arrays
+  let linksArray = new Float32Array(0);
+  let selectedUrl = null;
+  let hoverUrl = null;
+
   form.addEventListener('submit', function (e) { e.preventDefault(); begin(); });
   stopBtn.addEventListener('click', function () { stop('stopped'); });
   continueBtn.addEventListener('click', continueCrawl);
   filterIn.addEventListener('input', applyFilter);
-  fitBtn.addEventListener('click', fitView);
+  fitBtn.addEventListener('click', () => { if (cosmosInstance) cosmosInstance.fitView(); });
 
   $('#closePlayer').addEventListener('click', function () {
     audio.pause(); audio.removeAttribute('src'); audio.load();
@@ -316,14 +304,15 @@
     const tab = btn.dataset.tab;
     tabsNav.querySelectorAll('button').forEach(function (b) { b.classList.toggle('active', b === btn); });
     Object.keys(panels).forEach(function (k) { panels[k].classList.toggle('active', k === tab); });
-    if (tab === 'map') requestAnimationFrame(() => { drawMap(); fitView(); });
+    if (tab === 'map') {
+      requestAnimationFrame(() => { 
+        initCosmos(); // Ensure initialized
+        updateCosmosData(); 
+        if (cosmosInstance) cosmosInstance.fitView();
+      });
+    }
     if (tab === 'logs') logsEl.scrollTop = logsEl.scrollHeight;
   });
-
-  const mapResizeObserver = new ResizeObserver(() => {
-    if (panels.map.classList.contains('active')) requestAnimationFrame(() => { drawMap(); fitView(); });
-  });
-  mapResizeObserver.observe(mapSvg);
 
   function setStatus(t) { statusEl.textContent = t; }
 
@@ -351,16 +340,18 @@
     audio.pause(); audio.removeAttribute('src');
 
     pageNodes.clear();
-
+    nodeIndexMap.clear();
     selectedUrl = null;
     hoverUrl = null;
-    view.scale = 1; view.tx = 0; view.ty = 0;
+    
+    if (cosmosInstance) {
+      cosmosInstance.setPointPositions(new Float32Array(0));
+      cosmosInstance.setLinks(new Float32Array(0));
+    }
     popupEl.hidden = true;
 
     continueBtn.disabled = true;
     continueBtn.textContent = 'continue +1 worker';
-
-    if (panels.map.classList.contains('active')) requestAnimationFrame(drawMap);
 
     addLog('info', 'starting crawl: ' + urlIn.value.trim());
     startCrawl(null);
@@ -472,7 +463,7 @@
             files: []
           });
         } catch (_) {}
-        if (panels.map.classList.contains('active')) requestAnimationFrame(drawMap);
+        if (panels.map.classList.contains('active')) requestAnimationFrame(updateCosmosData);
       } else {
         errCount++;
         addLog('fail', 'fail  ' + m.url + '   — ' + (m.reason || 'unknown'));
@@ -481,7 +472,7 @@
     } else if (m.type === 'file') {
       if (pageNodes.has(m.file.page)) {
         pageNodes.get(m.file.page).files.push(m.file);
-        if (panels.map.classList.contains('active')) requestAnimationFrame(drawMap);
+        if (panels.map.classList.contains('active')) requestAnimationFrame(updateCosmosData);
       }
       addRow(m.file);
       addLog('file', 'file  ' + m.file.host + ' / ' + m.file.name + '   ← ' + m.file.page);
@@ -523,7 +514,7 @@
       }
       
       if (panels.map.classList.contains('active')) {
-        requestAnimationFrame(() => { drawMap(); fitView(); });
+        requestAnimationFrame(() => { updateCosmosData(); if (cosmosInstance) cosmosInstance.fitView(); });
       }
     }
   }
@@ -608,58 +599,140 @@
     tr.style.display = tr.dataset.search.indexOf(q) === -1 ? 'none' : '';
   }
 
-  // ---------------- map (force-directed graph, pan/zoom, node focus) ----------------
+  // ---------------- map (Cosmos WebGL) ----------------
 
-  const view = { scale: 1, tx: 0, ty: 0 };
-  let selectedUrl = null;
-  let hoverUrl = null;
-  let viewportEl = null;
+  function initCosmos() {
+    if (cosmosInstance) return;
+    if (!window.Cosmos) {
+      console.error("Cosmos library not loaded.");
+      return;
+    }
 
-  function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+    const config = {
+      backgroundColor: '#fafafa',
+      spaceSize: 4096,
+      nodeSize: 10, 
+      nodeColor: '#767676',
+      linkWidth: 1.5,
+      linkColor: '#d9d9d9',
+      
+      // Prevent bunching: Higher repulsion, defined link distance
+      simulationFriction: 0.15,      
+      simulationRepulsion: 2.5,       
+      simulationLinkSpring: 0.6,     
+      simulationLinkDistance: 40,    
+      simulationGravity: 0.15,       
 
-  function toLocal(clientX, clientY) {
-    const r = mapSvg.getBoundingClientRect();
-    const b = mapSvg.clientLeft || 0;
-    return { x: clientX - r.left - b, y: clientY - r.top - b };
+      fitViewOnInit: true,
+      enableSimulation: true,
+      
+      onPointMouseOver: (index) => {
+        if (index === undefined) {
+          hoverUrl = null;
+        } else {
+          const nodeArray = Array.from(pageNodes.values());
+          hoverUrl = nodeArray[index].url;
+        }
+        updateHighlight();
+      },
+      
+      onPointClick: (index, event) => {
+        if (index === undefined) {
+          selectNode(null);
+          return;
+        }
+        const nodeArray = Array.from(pageNodes.values());
+        const node = nodeArray[index];
+        selectNode(node.url);
+        
+        // Position popup using the click event coordinates relative to map container
+        const rect = mapWrap.getBoundingClientRect();
+        const clientX = event.clientX || event.touches?.[0]?.clientX || 0;
+        const clientY = event.clientY || event.touches?.[0]?.clientY || 0;
+        
+        let left = clientX - rect.left + 14;
+        let top = clientY - rect.top - popupEl.offsetHeight / 2;
+        
+        const W = mapWrap.clientWidth;
+        const pw = popupEl.offsetWidth;
+        if (left + pw > W - 6) left = clientX - rect.left - pw - 14;
+        
+        popupEl.style.left = Math.max(6, left) + 'px';
+        popupEl.style.top = Math.max(6, top) + 'px';
+      }
+    };
+
+    cosmosInstance = new window.Cosmos(mapContainer, config);
   }
 
-  function applyTransform() {
-    if (viewportEl) {
-      viewportEl.setAttribute('transform',
-        'translate(' + view.tx + ',' + view.ty + ') scale(' + view.scale + ')');
-    }
-    if (mapSvg) {
-      mapSvg.classList.toggle('low-zoom', view.scale < 0.65);
-    }
-    positionPopup();
-  }
+  function updateCosmosData() {
+    initCosmos();
+    if (!cosmosInstance) return;
 
-  function fitView() {
-    if (pageNodes.size === 0) return;
-    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-    pageNodes.forEach(n => {
-      if (n.x < minX) minX = n.x;
-      if (n.x > maxX) maxX = n.x;
-      if (n.y < minY) minY = n.y;
-      if (n.y > maxY) maxY = n.y;
+    const nodes = Array.from(pageNodes.values());
+    if (nodes.length === 0) {
+      cosmosInstance.setPointPositions(new Float32Array(0));
+      cosmosInstance.setLinks(new Float32Array(0));
+      return;
+    }
+
+    const points = new Float32Array(nodes.length * 2);
+    const sizes = new Float32Array(nodes.length);
+    const colors = new Float32Array(nodes.length * 4);
+    const linksList = [];
+
+    nodeIndexMap.clear();
+
+    // Initial circular layout based on depth to give Cosmos a good start
+    nodes.forEach((n, i) => {
+      nodeIndexMap.set(n.url, i);
+      const angle = (i / nodes.length) * Math.PI * 2;
+      const radius = 50 + (n.depth || 0) * 40;
+      points[i * 2] = Math.cos(angle) * radius;
+      points[i * 2 + 1] = Math.sin(angle) * radius;
+
+      const isRoot = n.depth === 0;
+      const hasFiles = n.files.length > 0;
+
+      sizes[i] = isRoot ? 16 : (hasFiles ? 10 : 6);
+      
+      // Base Colors (R, G, B, A)
+      if (isRoot) {
+        colors.set([1.0, 0.23, 0.0, 1.0], i * 4); // Accent Orange
+      } else if (hasFiles) {
+        colors.set([0.7, 0.15, 0.1, 1.0], i * 4); // Dark Red
+      } else {
+        colors.set([0.46, 0.46, 0.46, 1.0], i * 4); // Gray
+      }
     });
 
-    const pad = 60;
-    minX -= pad; maxX += pad;
-    minY -= pad; maxY += pad;
+    // Build Links
+    nodes.forEach((n, i) => {
+      if (n.source && nodeIndexMap.has(n.source)) {
+        linksList.push(nodeIndexMap.get(n.source), i);
+      }
+    });
 
-    const W = mapSvg.clientWidth, H = mapSvg.clientHeight;
-    const w = Math.max(maxX - minX, 100);
-    const h = Math.max(maxY - minY, 100);
+    linksArray = new Float32Array(linksList);
 
-    const scale = Math.min(W / w, H / h, 1.5);
-    const tx = (W - w * scale) / 2 - minX * scale;
-    const ty = (H - h * scale) / 2 - minY * scale;
+    cosmosInstance.setPointPositions(points);
+    cosmosInstance.setPointSizes(sizes);
+    cosmosInstance.setPointColors(colors);
+    cosmosInstance.setLinks(linksArray);
 
-    view.scale = scale;
-    view.tx = tx;
-    view.ty = ty;
-    applyTransform();
+    // Set default link colors
+    const linkColors = new Float32Array(linksArray.length * 4);
+    for (let i = 0; i < linksArray.length / 2; i++) {
+      linkColors.set([0.85, 0.85, 0.85, 1.0], i * 4);
+    }
+    cosmosInstance.setLinkColors(linkColors);
+
+    updateHighlight();
+    
+    // If we just loaded the first nodes, fit the view
+    if (nodes.length > 0 && !selectedUrl) {
+      setTimeout(() => { if (cosmosInstance) cosmosInstance.fitView(); }, 100);
+    }
   }
 
   function selectNode(url) {
@@ -670,7 +743,8 @@
   }
 
   function updateHighlight() {
-    if (!viewportEl) return;
+    if (!cosmosInstance) return;
+    
     const activeUrl = hoverUrl || selectedUrl;
     const pathUrls = new Set();
     
@@ -683,17 +757,48 @@
     }
     const active = pathUrls.size > 0;
 
-    viewportEl.querySelectorAll('.node').forEach(function (el) {
-      const url = el.getAttribute('data-url');
-      el.classList.toggle('dim', active && !pathUrls.has(url));
-      el.classList.toggle('selected', url === selectedUrl);
+    const nodes = Array.from(pageNodes.values());
+    const pointColors = new Float32Array(nodes.length * 4);
+    const linkColors = new Float32Array(linksArray.length * 4);
+
+    let linkIdx = 0;
+    nodes.forEach((n, i) => {
+      const inPath = pathUrls.has(n.url);
+      const isRoot = n.depth === 0;
+      const hasFiles = n.files.length > 0;
+      
+      // Update Node Colors
+      if (active && !inPath) {
+        // Dimmed
+        if (isRoot) pointColors.set([1.0, 0.23, 0.0, 0.15], i * 4);
+        else if (hasFiles) pointColors.set([0.7, 0.15, 0.1, 0.15], i * 4);
+        else pointColors.set([0.46, 0.46, 0.46, 0.15], i * 4);
+      } else {
+        // Normal or Highlighted
+        if (isRoot) pointColors.set([1.0, 0.23, 0.0, 1.0], i * 4);
+        else if (hasFiles) pointColors.set([0.7, 0.15, 0.1, 1.0], i * 4);
+        else pointColors.set([0.46, 0.46, 0.46, 1.0], i * 4);
+      }
+
+      // Update Link Colors
+      if (n.source && nodeIndexMap.has(n.source)) {
+        const sourceUrl = n.source;
+        const targetUrl = n.url;
+        const inPathLink = pathUrls.has(sourceUrl) && pathUrls.has(targetUrl);
+
+        if (active && !inPathLink) {
+          linkColors.set([0.85, 0.85, 0.85, 0.05], linkIdx * 4); // Very dim
+        } else if (inPathLink) {
+          linkColors.set([1.0, 0.23, 0.0, 1.0], linkIdx * 4); // Orange path
+        } else {
+          linkColors.set([0.85, 0.85, 0.85, 1.0], linkIdx * 4); // Default
+        }
+        linkIdx++;
+      }
     });
 
-    viewportEl.querySelectorAll('.edge').forEach(function (el) {
-      const inPath = active && pathUrls.has(el.getAttribute('data-target'));
-      el.classList.toggle('dim', active && !inPath);
-      el.classList.toggle('path', inPath);
-    });
+    cosmosInstance.setPointColors(pointColors);
+    cosmosInstance.setLinkColors(linkColors);
   }
 
   function showPopup(node) {
@@ -761,368 +866,6 @@
 
     popupEl.appendChild(list);
     popupEl.hidden = false;
-    positionPopup();
-  }
-
-  function positionPopup() {
-    if (popupEl.hidden || !selectedUrl) return;
-    const node = pageNodes.get(selectedUrl);
-    if (!node || node.x === undefined) return;
-
-    const b = mapSvg.clientLeft || 0;
-    const sx = b + node.x * view.scale + view.tx;
-    const sy = b + node.y * view.scale + view.ty;
-
-    const W = mapWrap.clientWidth, H = mapWrap.clientHeight;
-    const pw = popupEl.offsetWidth, ph = popupEl.offsetHeight;
-
-    let left = sx + 14;
-    if (left + pw > W - 6) left = sx - pw - 14;
-    left = Math.max(6, Math.min(left, W - pw - 6));
-
-    let top = sy - ph / 2;
-    top = Math.max(6, Math.min(top, H - ph - 6));
-
-    popupEl.style.left = left + 'px';
-    popupEl.style.top = top + 'px';
-  }
-
-  // -------- pan / zoom / pinch --------
-
-  const pointers = new Map();
-  let drag = null, pinch = null;
-
-  mapSvg.addEventListener('pointerdown', function (e) {
-    if (e.button !== 0) return;
-    if (!mapSvg.setPointerCapture) return;
-    mapSvg.setPointerCapture(e.pointerId);
-    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-
-    if (pointers.size === 1) {
-      const nodeEl = e.target.closest ? e.target.closest('.node') : null;
-      drag = {
-        x: e.clientX, y: e.clientY,
-        tx: view.tx, ty: view.ty,
-        moved: false,
-        url: nodeEl ? nodeEl.getAttribute('data-url') : null
-      };
-      pinch = null;
-    } else if (pointers.size === 2) {
-      const pts = Array.from(pointers.values());
-      const a = toLocal(pts[0].x, pts[0].y);
-      const b = toLocal(pts[1].x, pts[1].y);
-      const dist = Math.hypot(a.x - b.x, a.y - b.y) || 1;
-      const cx = (a.x + b.x) / 2, cy = (a.y + b.y) / 2;
-      pinch = {
-        dist: dist,
-        scale: view.scale,
-        wx: (cx - view.tx) / view.scale,
-        wy: (cy - view.ty) / view.scale
-      };
-      drag = null;
-    }
-  });
-
-  mapSvg.addEventListener('pointermove', function (e) {
-    if (!pointers.has(e.pointerId)) return;
-    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    const pts = Array.from(pointers.values());
-
-    if (pinch && pts.length >= 2) {
-      const a = toLocal(pts[0].x, pts[0].y);
-      const b = toLocal(pts[1].x, pts[1].y);
-      const dist = Math.hypot(a.x - b.x, a.y - b.y) || 1;
-      const cx = (a.x + b.x) / 2, cy = (a.y + b.y) / 2;
-      const k = clamp(pinch.scale * (dist / pinch.dist), 0.1, 8);
-      view.scale = k;
-      view.tx = cx - pinch.wx * k;
-      view.ty = cy - pinch.wy * k;
-      applyTransform();
-      return;
-    }
-
-    if (drag) {
-      const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
-      if (!drag.moved && Math.hypot(dx, dy) > 4) drag.moved = true;
-      if (drag.moved) {
-        view.tx = drag.tx + dx;
-        view.ty = drag.ty + dy;
-        applyTransform();
-      }
-    }
-  });
-
-  function endPointer(e, cancelled) {
-    if (!pointers.has(e.pointerId)) return;
-    pointers.delete(e.pointerId);
-    try { mapSvg.releasePointerCapture(e.pointerId); } catch (_) {}
-
-    if (pointers.size < 2) pinch = null;
-
-    if (pointers.size === 1) {
-      const p = Array.from(pointers.values())[0];
-      drag = { x: p.x, y: p.y, tx: view.tx, ty: view.ty, moved: true, url: null };
-      return;
-    }
-
-    if (pointers.size === 0) {
-      if (drag && !drag.moved && !cancelled) selectNode(drag.url);
-      drag = null;
-    }
-  }
-
-  mapSvg.addEventListener('pointerup', function (e) { endPointer(e, false); });
-  mapSvg.addEventListener('pointercancel', function (e) { endPointer(e, true); });
-
-  mapSvg.addEventListener('wheel', function (e) {
-    e.preventDefault();
-    const p = toLocal(e.clientX, e.clientY);
-    const factor = Math.exp(-e.deltaY * 0.0015);
-    const k = clamp(view.scale * factor, 0.1, 8);
-    view.tx = p.x - (p.x - view.tx) * (k / view.scale);
-    view.ty = p.y - (p.y - view.ty) * (k / view.scale);
-    view.scale = k;
-    applyTransform();
-  }, { passive: false });
-
-  // -------- drawing --------
-
-  function drawMap() {
-    const rect = mapSvg.getBoundingClientRect();
-    if (rect.width === 0) return;
-    const W = rect.width, H = rect.height;
-    mapSvg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
-    mapSvg.innerHTML = '';
-    viewportEl = null;
-
-    const NS = 'http://www.w3.org/2000/svg';
-    function make(name, attrs) {
-      const el = document.createElementNS(NS, name);
-      for (const k in attrs) el.setAttribute(k, attrs[k]);
-      return el;
-    }
-
-    const nodes = Array.from(pageNodes.values());
-    if (nodes.length === 0) {
-      const t = make('text', {
-        x: W / 2, y: H / 2, 'text-anchor': 'middle',
-        'font-family': 'ui-monospace, monospace', 'font-size': 12, fill: '#767676'
-      });
-      t.textContent = 'start a crawl to see the map';
-      mapSvg.appendChild(t);
-      selectedUrl = null;
-      popupEl.hidden = true;
-      return;
-    }
-
-    const cx = W / 2, cy = H / 2;
-    const maxDepth = Math.max(...nodes.map(n => n.depth), 0);
-
-    const rings = Array.from({ length: maxDepth + 1 }, () => []);
-    nodes.forEach(n => rings[n.depth].push(n));
-    rings.forEach(ring => ring.sort((a, b) => (a.source || '').localeCompare(b.source || '')));
-
-    rings.forEach((ring, depth) => {
-      const n = ring.length;
-      const r = (Math.min(W, H) / 2.5) * (depth / (maxDepth || 1));
-      ring.forEach((node, i) => {
-        if (node.x === undefined) {
-          if (depth === 0) {
-            node.x = cx;
-            node.y = cy;
-          } else {
-            const angle = (i / n) * Math.PI * 2 - Math.PI / 2;
-            node.x = cx + Math.cos(angle) * r;
-            node.y = cy + Math.sin(angle) * r;
-          }
-          node.vx = 0;
-          node.vy = 0;
-        }
-      });
-    });
-
-    const iterations = 80;
-    const k = Math.sqrt((W * H) / Math.max(nodes.length, 1)) * 0.8;
-
-    const nodeMap = new Map(nodes.map(n => [n.url, n]));
-    const validEdges = [];
-    nodes.forEach(node => {
-      if (node.source && nodeMap.has(node.source)) {
-        validEdges.push({ source: nodeMap.get(node.source), target: node });
-      }
-    });
-
-    for (let iter = 0; iter < iterations; iter++) {
-      for (let j = 0; j < nodes.length; j++) {
-        const n1 = nodes[j];
-        for (let l = j + 1; l < nodes.length; l++) {
-          const n2 = nodes[l];
-          let dx = n2.x - n1.x;
-          let dy = n2.y - n1.y;
-          let distSq = dx * dx + dy * dy;
-          if (distSq < 1) distSq = 1;
-
-          let dist = Math.sqrt(distSq);
-          let force = (k * k) / distSq;
-          if (force > k * 2) force = k * 2;
-
-          if (n1.depth === 0) {
-            n2.vx += (dx / dist) * force * 2;
-            n2.vy += (dy / dist) * force * 2;
-          } else if (n2.depth === 0) {
-            n1.vx -= (dx / dist) * force * 2;
-            n1.vy -= (dy / dist) * force * 2;
-          } else {
-            n1.vx -= (dx / dist) * force;
-            n1.vy -= (dy / dist) * force;
-            n2.vx += (dx / dist) * force;
-            n2.vy += (dy / dist) * force;
-          }
-        }
-      }
-
-      validEdges.forEach(e => {
-        let dx = e.target.x - e.source.x;
-        let dy = e.target.y - e.source.y;
-        let dist = Math.sqrt(dx * dx + dy * dy) || 1;
-        let targetLen = k * 1.5;
-        let force = (dist - targetLen) * 0.05;
-        let fx = (dx / dist) * force;
-        let fy = (dy / dist) * force;
-
-        if (e.source.depth !== 0) { e.source.vx += fx; e.source.vy += fy; }
-        if (e.target.depth !== 0) { e.target.vx -= fx; e.target.vy -= fy; }
-      });
-
-      nodes.forEach(n => {
-        if (n.depth === 0) return;
-        let dx = cx - n.x;
-        let dy = cy - n.y;
-        n.vx += dx * 0.005; 
-        n.vy += dy * 0.005;
-      });
-
-      nodes.forEach(n => {
-        if (n.depth === 0) return;
-        n.vx *= 0.6;
-        n.vy *= 0.6;
-        n.x += n.vx;
-        n.y += n.vy;
-      });
-    }
-
-    viewportEl = make('g', {});
-    mapSvg.appendChild(viewportEl);
-
-    validEdges.forEach(e => {
-      const dx = e.target.x - e.source.x;
-      const dy = e.target.y - e.source.y;
-      const cx1 = e.source.x + dx * 0.5 + dy * 0.1;
-      const cy1 = e.source.y + dy * 0.5 - dx * 0.1;
-      
-      viewportEl.appendChild(make('path', {
-        d: `M ${e.source.x} ${e.source.y} Q ${cx1} ${cy1} ${e.target.x} ${e.target.y}`,
-        'class': 'edge',
-        'data-source': e.source.url,
-        'data-target': e.target.url
-      }));
-    });
-
-    nodes.forEach(node => {
-      const isRoot = node.depth === 0;
-      const fc = node.files.length;
-      const hasFiles = fc > 0;
-
-      const r = isRoot ? 6 : (hasFiles ? 3.5 : 2);
-      const fill = isRoot ? '#ff3b00' : (hasFiles ? '#fff2ee' : '#fff');
-      const stroke = isRoot ? 'none' : (hasFiles ? '#ff3b00' : '#bbb');
-      const strokeW = isRoot ? 0 : (hasFiles ? 1.5 : 1);
-
-      const g = make('g', { 'class': 'node' + (hasFiles ? ' has-files' : ''), 'data-url': node.url });
-
-      g.addEventListener('pointerenter', () => {
-        hoverUrl = node.url;
-        updateHighlight();
-      });
-      g.addEventListener('pointerleave', () => {
-        hoverUrl = null;
-        updateHighlight();
-      });
-
-      g.appendChild(make('circle', {
-        cx: node.x, cy: node.y, r: Math.max(12, r * 3), fill: 'transparent'
-      }));
-
-      g.appendChild(make('circle', {
-        'class': 'dot', cx: node.x, cy: node.y, r: r,
-        fill: fill, stroke: stroke, 'stroke-width': strokeW
-      }));
-
-      let label = node.path;
-      if (label === '/') label = isRoot ? 'ORIGIN' : '/ (Home)';
-      if (label.length > 16) label = label.substring(0, 14) + '...';
-
-      const dx = node.x - cx;
-      const dy = node.y - cy;
-      const distFromCenter = Math.sqrt(dx * dx + dy * dy);
-
-      let textX = node.x;
-      let textY = node.y + (isRoot ? 18 : 12);
-      let textAnchor = 'middle';
-
-      if (!isRoot && distFromCenter > 20) {
-        if (Math.abs(dy) > Math.abs(dx)) {
-          if (dy > 0) { textY = node.y + 13; }
-          else { textY = node.y - 8; }
-        } else {
-          if (dx > 0) { textX = node.x + 9; textAnchor = 'start'; textY = node.y + 3; }
-          else { textX = node.x - 9; textAnchor = 'end'; textY = node.y + 3; }
-        }
-      }
-
-      const title = make('title');
-      title.textContent = node.url + (hasFiles ? ' (' + fc + ' audio file' + (fc > 1 ? 's' : '') + ')' : '');
-      g.appendChild(title);
-
-      const text = make('text', {
-        x: textX, y: textY, 'text-anchor': textAnchor,
-        'font-family': 'ui-monospace, monospace',
-        'font-size': isRoot ? 11 : 9,
-        'font-weight': isRoot ? 700 : 400,
-        fill: isRoot ? '#111' : (hasFiles ? '#b3261e' : '#767676')
-      });
-      text.textContent = label;
-      g.appendChild(text);
-
-      viewportEl.appendChild(g);
-    });
-
-    const legend = make('g', { transform: 'translate(16, 16)' });
-
-    legend.appendChild(make('circle', { cx: 6, cy: 6, r: 5, fill: '#ff3b00' }));
-    const t1 = make('text', { x: 18, y: 10, 'font-family': 'ui-monospace, monospace', 'font-size': 11, fill: '#111' });
-    t1.textContent = 'Start Page';
-    legend.appendChild(t1);
-
-    legend.appendChild(make('circle', { cx: 6, cy: 26, r: 2.5, fill: '#fff', stroke: '#bbb', 'stroke-width': 1 }));
-    const t2 = make('text', { x: 18, y: 30, 'font-family': 'ui-monospace, monospace', 'font-size': 11, fill: '#111' });
-    t2.textContent = 'Crawled Page';
-    legend.appendChild(t2);
-
-    legend.appendChild(make('circle', { cx: 6, cy: 46, r: 4.5, fill: '#fff2ee', stroke: '#ff3b00', 'stroke-width': 1.5 }));
-    const t3 = make('text', { x: 18, y: 50, 'font-family': 'ui-monospace, monospace', 'font-size': 11, fill: '#b3261e' });
-    t3.textContent = 'Page with Audio';
-    legend.appendChild(t3);
-
-    const hint = make('text', { x: 0, y: 76, 'font-family': 'ui-monospace, monospace', 'font-size': 10, fill: '#aaa' });
-    hint.textContent = 'drag · scroll / pinch · click node';
-    legend.appendChild(hint);
-
-    mapSvg.appendChild(legend);
-
-    applyTransform();
-    updateHighlight();
-    if (selectedUrl && pageNodes.has(selectedUrl)) showPopup(pageNodes.get(selectedUrl));
   }
 })();
 </script>
