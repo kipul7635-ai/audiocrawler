@@ -3,6 +3,19 @@ const AUDIO_EXT = /\.(mp3|mp2|wav|ogg|oga|m4a|m4b|flac|aac|opus|weba|wma|aiff|ai
 const CONCURRENCY = 6;
 
 export async function onRequestGet(context) {
+  return handleCrawl(context, null);
+}
+
+export async function onRequestPost(context) {
+  let resume = null;
+  try {
+    const body = await context.request.json();
+    if (body && body.resume && typeof body.resume === 'object') resume = body.resume;
+  } catch (_) {}
+  return handleCrawl(context, resume);
+}
+
+async function handleCrawl(context, resume) {
   const { request } = context;
   const q = new URL(request.url).searchParams;
 
@@ -39,27 +52,32 @@ export async function onRequestGet(context) {
         catch { closed = true; }
       };
 
-      const visited = new Set();
-      const seenFiles = new Set();
       const normalize = (u) => {
         try { const n = new URL(u); n.hash = ''; return n.href; }
         catch { return u; }
       };
 
-      // Track source and depth now
-      const queue = [{ url: start.href, depth: 0, source: null }];
-      visited.add(normalize(start.href));
+      // ---- resume-aware initialization ----
+      const visited = new Set(Array.isArray(resume?.visited) ? resume.visited : []);
+      const seenFiles = new Set(Array.isArray(resume?.seenFiles) ? resume.seenFiles : []);
+      const queue = Array.isArray(resume?.queue) && resume.queue.length
+        ? resume.queue.slice()
+        : [{ url: start.href, depth: 0, source: null }];
 
-      let pagesAttempted = 0;
-      let fileCount = 0;
-      let failed = 0;
+      if (!resume) visited.add(normalize(start.href));
+
+      let pagesAttempted = resume?.stats?.pages || 0;   // cumulative
+      let fileCount     = resume?.stats?.files || 0;    // cumulative
+      let failed        = resume?.stats?.failed || 0;   // cumulative
+      let pagesThisWorker = 0;                          // per-worker budget
 
       try {
-        while (queue.length > 0 && pagesAttempted < maxPages) {
+        while (queue.length > 0 && pagesThisWorker < maxPages) {
           const batch = [];
-          while (queue.length > 0 && batch.length < CONCURRENCY && pagesAttempted + batch.length < maxPages) {
+          while (queue.length > 0 && batch.length < CONCURRENCY && pagesThisWorker + batch.length < maxPages) {
             const item = queue.shift();
-            if (!inScope(new URL(item.url).hostname)) continue;
+            try { if (!inScope(new URL(item.url).hostname)) continue; }
+            catch { continue; }
             batch.push(item);
           }
           if (batch.length === 0) break;
@@ -70,6 +88,7 @@ export async function onRequestGet(context) {
             const item = batch[i];
             const res = results[i];
             pagesAttempted++;
+            pagesThisWorker++;
 
             if (res.status !== 'fulfilled') {
               failed++;
@@ -87,7 +106,6 @@ export async function onRequestGet(context) {
               continue;
             }
 
-            // Send success event with source and depth
             send({ type: 'page', url: item.url, source: item.source, depth: item.depth, status: 'ok', links: links.length });
 
             for (const abs of links) {
@@ -112,17 +130,36 @@ export async function onRequestGet(context) {
                 const key = normalize(abs.href);
                 if (visited.has(key)) continue;
                 visited.add(key);
-                // Push to queue with the current page as the source
                 queue.push({ url: abs.href, depth: item.depth + 1, source: item.url });
               }
             }
           }
         }
 
-        send({ type: 'done', stats: { pages: pagesAttempted, files: fileCount, failed: failed } });
+        const resumeNext = queue.length > 0 ? {
+          visited: Array.from(visited),
+          seenFiles: Array.from(seenFiles),
+          queue,
+          stats: { pages: pagesAttempted, files: fileCount, failed }
+        } : null;
+
+        send({
+          type: 'done',
+          stats: { pages: pagesAttempted, files: fileCount, failed },
+          resume: resumeNext
+        });
       } catch (err) {
         send({ type: 'error', message: String(err && err.message ? err.message : err) });
-        send({ type: 'done', stats: { pages: pagesAttempted, files: fileCount, failed: failed } });
+        send({
+          type: 'done',
+          stats: { pages: pagesAttempted, files: fileCount, failed },
+          resume: queue.length > 0 ? {
+            visited: Array.from(visited),
+            seenFiles: Array.from(seenFiles),
+            queue,
+            stats: { pages: pagesAttempted, files: fileCount, failed }
+          } : null
+        });
       } finally {
         if (!closed) { try { controller.close(); } catch (_) {} }
       }
