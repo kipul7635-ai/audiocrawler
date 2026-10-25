@@ -98,65 +98,69 @@
   .log-info  { color:var(--muted); }
   .log-time  { color:#aaa; margin-right:8px; }
 
-  #panel-map{ padding:0; position:relative; height:calc(100dvh - 240px); min-height:400px; overflow:hidden; background:#fafafa; border-bottom:1px solid var(--soft); }
-  
-  #map-wrapper{
-    width:100%; height:100%; cursor:grab; touch-action:none;
-    transition:transform 0.4s ease;
-    transform-origin:center center;
+  /* ---------------- map ---------------- */
+  #panel-map{ padding:16px; }
+  #map-wrap{ position:relative; }
+  #map{
+    display:block;
+    width:100%;
+    height:calc(100dvh - 240px);
+    min-height:400px;
+    background:#fafafa;
+    border:1px solid var(--soft);
+    overflow:hidden;
+    touch-action:none;
+    cursor:grab;
+    user-select:none;
+    -webkit-user-select:none;
   }
-  #map-wrapper:active{ cursor:grabbing; }
-  #map-wrapper.mode-3d{
-    transform: perspective(1200px) rotateX(55deg) rotateZ(-45deg) scale(0.8);
-  }
-  
-  #map{ display:block; width:100%; height:100%; }
+  #map:active{ cursor:grabbing; }
 
-  .node-text { pointer-events:none; transition: opacity 0.2s; }
-  .edge { transition: opacity 0.2s, stroke 0.2s; }
-  .node-circle { transition: opacity 0.2s, fill 0.2s, stroke 0.2s, r 0.2s; cursor:pointer; }
-  
-  .dimmed { opacity: 0.1 !important; }
-  .highlighted { opacity: 1 !important; }
-  .highlighted-edge { stroke: var(--accent) !important; stroke-width: 2px !important; }
-  .selected-node { stroke: var(--accent) !important; stroke-width: 3px !important; }
+  #map .node{ cursor:pointer; transition:opacity .15s ease; }
+  #map .node text{ transition:opacity .15s ease; }
+  #map .node.dim{ opacity:.16; }
+  #map .node.dim text{ opacity:0; }
+  #map .node:hover .dot{ stroke:var(--accent); }
+  #map .node.selected .dot{ stroke:var(--accent); stroke-width:2.5; }
 
-  .map-btn {
-    position:absolute; top:16px; right:16px;
-    background:#fff; border:1px solid var(--line); color:var(--fg);
-    font:inherit; font-size:11px; padding:6px 10px; letter-spacing:1px; text-transform:uppercase;
-    cursor:pointer; z-index:10;
-  }
-  .map-btn:hover{ background:var(--fg); color:#fff; }
-  .map-btn:active{ background:var(--accent); border-color:var(--accent); }
-  #btn-reset{ right:100px; }
+  #map .edge{ stroke:#d9d9d9; stroke-width:1; transition:opacity .15s ease, stroke .15s ease; }
+  #map .edge.dim{ opacity:.1; }
+  #map .edge.path{ stroke:var(--accent); stroke-width:1.4; }
 
-  #map-sidebar {
-    position:absolute; top:0; right:0; bottom:0; width:320px;
-    background:rgba(255, 255, 255, 0.95); backdrop-filter: blur(4px);
-    border-left:1px solid var(--line); z-index:20;
+  #node-popup{
+    position:absolute; z-index:10;
+    width:238px; max-height:280px;
     display:flex; flex-direction:column;
-    transform:translateX(100%); transition:transform 0.3s ease;
+    background:#fff; border:1px solid var(--line);
+    box-shadow:5px 5px 0 rgba(17,17,17,.13);
+    font-size:11px; line-height:1.4;
   }
-  #map-sidebar.open { transform:translateX(0); }
-  .sidebar-header {
-    display:flex; align-items:center; justify-content:space-between;
-    padding:12px 16px; border-bottom:1px solid var(--soft);
+  #node-popup[hidden]{ display:none; }
+  #node-popup .np-head{
+    display:flex; align-items:center; gap:8px;
+    padding:7px 9px; border-bottom:1px solid var(--soft);
   }
-  .sidebar-title { font-weight:700; font-size:12px; word-break:break-all; }
-  .sidebar-close { border:none; background:none; font-size:18px; cursor:pointer; padding:0; color:var(--muted); }
-  .sidebar-close:hover { color:var(--accent); }
-  .sidebar-content { flex:1; overflow-y:auto; padding:12px 16px; }
-  .file-item {
-    padding:8px 0; border-bottom:1px solid #eee; display:flex; flex-direction:column; gap:4px;
+  #node-popup .np-dot{ width:7px; height:7px; background:var(--accent); flex:0 0 auto; }
+  #node-popup .np-path{
+    flex:1; min-width:0; font-weight:700; letter-spacing:.5px;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
   }
-  .file-item:last-child { border-bottom:none; }
-  .file-name { font-weight:700; font-size:12px; word-break:break-all; }
-  .file-actions { display:flex; gap:6px; margin-top:4px; }
-  .file-actions button {
-    border:1px solid var(--line); background:#fff; padding:3px 8px; font:inherit; font-size:11px; cursor:pointer;
+  #node-popup .np-close{
+    border:0; background:transparent; color:var(--muted);
+    font:inherit; font-size:14px; line-height:1; padding:0 2px; cursor:pointer;
   }
-  .file-actions button:hover { background:var(--accent); border-color:var(--accent); color:#fff; }
+  #node-popup .np-close:hover{ color:var(--accent); }
+  #node-popup .np-meta{
+    padding:5px 9px; color:var(--muted); border-bottom:1px solid #eee;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  }
+  #node-popup .np-list{ overflow-y:auto; min-height:0; padding:3px 0; }
+  #node-popup .np-empty{ padding:8px 9px; color:var(--muted); }
+  #node-popup .np-file{ display:flex; align-items:center; gap:6px; padding:3px 9px; }
+  #node-popup .np-file:hover{ background:var(--hover); }
+  #node-popup .np-file span{
+    flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  }
 
   #player{
     position:fixed; left:0; right:0; bottom:0; display:flex; align-items:center; gap:12px;
@@ -214,19 +218,9 @@
 </section>
 
 <section id="panel-map" class="panel">
-  <div id="map-wrapper">
+  <div id="map-wrap">
     <svg id="map" xmlns="http://www.w3.org/2000/svg"></svg>
-  </div>
-  
-  <button id="btn-reset" class="map-btn" type="button">Reset View</button>
-  <button id="btn-3d" class="map-btn" type="button">Toggle 3D</button>
-
-  <div id="map-sidebar">
-    <div class="sidebar-header">
-      <span class="sidebar-title" id="sidebar-title">Files</span>
-      <button class="sidebar-close" id="sidebar-close" type="button">×</button>
-    </div>
-    <div class="sidebar-content" id="sidebar-files"></div>
+    <div id="node-popup" hidden></div>
   </div>
 </section>
 
@@ -247,8 +241,7 @@
         tbody = $('#tbody'), player = $('#player'), audio = $('#audio'),
         nowPlaying = $('#nowplaying'), filterIn = $('#filter'),
         tabsNav = $('#tabs'), logsEl = $('#logs'), mapSvg = $('#map'),
-        mapWrapper = $('#map-wrapper'), sidebar = $('#map-sidebar'),
-        sidebarTitle = $('#sidebar-title'), sidebarFiles = $('#sidebar-files');
+        mapWrap = $('#map-wrap'), popupEl = $('#node-popup');
 
   const panels = {
     output: $('#panel-output'),
@@ -260,13 +253,7 @@
   let finished = false, pageCount = 0, fileCount = 0, errCount = 0, rowCount = 0;
 
   let originUrl = '';
-  let pageNodes = new Map();
-  let selectedNodeUrl = null;
-
-  // Map view state
-  let viewState = { x: 0, y: 0, scale: 1 };
-  let isDragging = false, startX = 0, startY = 0;
-  let is3D = false;
+  const pageNodes = new Map();
 
   form.addEventListener('submit', function (e) { e.preventDefault(); begin(); });
   stopBtn.addEventListener('click', function () { stop('stopped'); });
@@ -286,89 +273,6 @@
     if (tab === 'map') requestAnimationFrame(drawMap);
     if (tab === 'logs') logsEl.scrollTop = logsEl.scrollHeight;
   });
-
-  // --- Map Interactions ---
-
-  $('#sidebar-close').addEventListener('click', function() {
-    sidebar.classList.remove('open');
-    selectedNodeUrl = null;
-    applyHighlights();
-  });
-
-  $('#btn-3d').addEventListener('click', function() {
-    is3D = !is3D;
-    mapWrapper.classList.toggle('mode-3d', is3D);
-    this.textContent = is3D ? 'Toggle 2D' : 'Toggle 3D';
-  });
-
-  $('#btn-reset').addEventListener('click', function() {
-    viewState = { x: 0, y: 0, scale: 1 };
-    applyTransform();
-  });
-
-  function applyTransform() {
-    const g = mapSvg.querySelector('#map-viewport');
-    if (g) {
-      g.setAttribute('transform', `translate(${viewState.x}, ${viewState.y}) scale(${viewState.scale})`);
-    }
-  }
-
-  mapWrapper.addEventListener('wheel', function(e) {
-    e.preventDefault();
-    const zoomFactor = 1.1;
-    if (e.deltaY < 0) viewState.scale *= zoomFactor;
-    else viewState.scale /= zoomFactor;
-    viewState.scale = Math.max(0.1, Math.min(10, viewState.scale));
-    applyTransform();
-  }, { passive: false });
-
-  mapWrapper.addEventListener('pointerdown', function(e) {
-    if (e.target.closest('circle') || e.target.closest('text')) return; // Let node clicks pass
-    isDragging = true;
-    startX = e.clientX - viewState.x;
-    startY = e.clientY - viewState.y;
-    mapWrapper.setPointerCapture(e.pointerId);
-  });
-
-  mapWrapper.addEventListener('pointermove', function(e) {
-    if (!isDragging) return;
-    viewState.x = e.clientX - startX;
-    viewState.y = e.clientY - startY;
-    applyTransform();
-  });
-
-  mapWrapper.addEventListener('pointerup', function(e) {
-    isDragging = false;
-    mapWrapper.releasePointerCapture(e.pointerId);
-  });
-
-  // Touch Pinch
-  let touchDist = 0;
-  mapWrapper.addEventListener('touchstart', function(e) {
-    if (e.touches.length === 2) {
-      touchDist = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
-    }
-  }, { passive: true });
-
-  mapWrapper.addEventListener('touchmove', function(e) {
-    if (e.touches.length === 2) {
-      e.preventDefault();
-      const dist = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
-      if (touchDist > 0) {
-        const factor = dist / touchDist;
-        viewState.scale *= factor;
-        viewState.scale = Math.max(0.1, Math.min(10, viewState.scale));
-        applyTransform();
-      }
-      touchDist = dist;
-    }
-  }, { passive: false });
-
-  mapWrapper.addEventListener('touchend', function(e) {
-    if (e.touches.length < 2) touchDist = 0;
-  }, { passive: true });
-
-  // --- Core Logic ---
 
   const mapResizeObserver = new ResizeObserver(() => {
     if (panels.map.classList.contains('active')) drawMap();
@@ -397,12 +301,15 @@
     logsEl.textContent = '';
     player.hidden = true;
     audio.pause(); audio.removeAttribute('src');
-    sidebar.classList.remove('open');
-    selectedNodeUrl = null;
-    
+
     originUrl = urlIn.value.trim();
     pageNodes.clear();
-    viewState = { x: 0, y: 0, scale: 1 };
+
+    // reset map state
+    selectedUrl = null;
+    view.scale = 1; view.tx = 0; view.ty = 0;
+    popupEl.hidden = true;
+
     if (panels.map.classList.contains('active')) requestAnimationFrame(drawMap);
 
     const params = new URLSearchParams({
@@ -481,8 +388,7 @@
             host: u.hostname,
             depth: m.depth || 0,
             source: m.source,
-            files: 0,
-            fileList: []
+            files: []
           });
         } catch (_) {}
         if (panels.map.classList.contains('active')) requestAnimationFrame(drawMap);
@@ -493,9 +399,7 @@
       setStatus('scanning — ' + pageCount + ' pages · ' + fileCount + ' files');
     } else if (m.type === 'file') {
       if (pageNodes.has(m.file.page)) {
-        const node = pageNodes.get(m.file.page);
-        node.files++;
-        node.fileList.push(m.file);
+        pageNodes.get(m.file.page).files.push(m.file);
         if (panels.map.classList.contains('active')) requestAnimationFrame(drawMap);
       }
       addRow(m.file);
@@ -567,13 +471,13 @@
 
   function playFile(f, tr) {
     document.querySelectorAll('tr.playing').forEach(function (r) { r.classList.remove('playing'); });
-    if(tr) tr.classList.add('playing');
+    if (tr) tr.classList.add('playing');
     player.hidden = false;
     nowPlaying.textContent = f.host + ' / ' + f.name;
     nowPlaying.title = f.url;
     audio.src = '/api/file?url=' + encodeURIComponent(f.url);
     const p = audio.play();
-    if (p && p.catch) p.catch(function () { });
+    if (p && p.catch) p.catch(function () { /* autoplay blocked or codec issue */ });
   }
 
   function downloadFile(f) {
@@ -595,7 +499,250 @@
     tr.style.display = tr.dataset.search.indexOf(q) === -1 ? 'none' : '';
   }
 
-  // ---------------- map (force-directed graph) ----------------
+  // ---------------- map (force-directed graph, pan/zoom, node focus) ----------------
+
+  const view = { scale: 1, tx: 0, ty: 0 };
+  let selectedUrl = null;
+  let viewportEl = null;
+
+  function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+
+  function toLocal(clientX, clientY) {
+    const r = mapSvg.getBoundingClientRect();
+    const b = mapSvg.clientLeft || 0;
+    return { x: clientX - r.left - b, y: clientY - r.top - b };
+  }
+
+  function applyTransform() {
+    if (viewportEl) {
+      viewportEl.setAttribute('transform',
+        'translate(' + view.tx + ',' + view.ty + ') scale(' + view.scale + ')');
+    }
+    positionPopup();
+  }
+
+  function selectNode(url) {
+    selectedUrl = (url && pageNodes.has(url)) ? url : null;
+    updateHighlight();
+    if (selectedUrl) showPopup(pageNodes.get(selectedUrl));
+    else popupEl.hidden = true;
+  }
+
+  function updateHighlight() {
+    if (!viewportEl) return;
+    const pathUrls = new Set();
+    if (selectedUrl) {
+      let cur = pageNodes.get(selectedUrl), guard = 0;
+      while (cur && guard++ < 5000) {
+        pathUrls.add(cur.url);
+        cur = cur.source ? pageNodes.get(cur.source) : null;
+      }
+    }
+    const active = pathUrls.size > 0;
+
+    viewportEl.querySelectorAll('.node').forEach(function (el) {
+      const url = el.getAttribute('data-url');
+      el.classList.toggle('dim', active && !pathUrls.has(url));
+      el.classList.toggle('selected', url === selectedUrl);
+    });
+
+    viewportEl.querySelectorAll('.edge').forEach(function (el) {
+      const inPath = active && pathUrls.has(el.getAttribute('data-target'));
+      el.classList.toggle('dim', active && !inPath);
+      el.classList.toggle('path', inPath);
+    });
+  }
+
+  function showPopup(node) {
+    if (!node) { popupEl.hidden = true; return; }
+    popupEl.textContent = '';
+
+    const head = document.createElement('div');
+    head.className = 'np-head';
+
+    const dot = document.createElement('span');
+    dot.className = 'np-dot';
+
+    const pathEl = document.createElement('span');
+    pathEl.className = 'np-path';
+    pathEl.textContent = node.path === '/' ? 'ORIGIN' : node.path;
+    pathEl.title = node.url;
+
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'np-close';
+    close.textContent = '×';
+    close.title = 'clear selection';
+    close.addEventListener('click', function () { selectNode(null); });
+
+    head.appendChild(dot);
+    head.appendChild(pathEl);
+    head.appendChild(close);
+    popupEl.appendChild(head);
+
+    const meta = document.createElement('div');
+    meta.className = 'np-meta';
+    const n = node.files.length;
+    meta.textContent = node.host + ' · ' + (n ? n + ' audio file' + (n > 1 ? 's' : '') : 'no audio files');
+    meta.title = node.url;
+    popupEl.appendChild(meta);
+
+    const list = document.createElement('div');
+    list.className = 'np-list';
+
+    if (!n) {
+      const empty = document.createElement('div');
+      empty.className = 'np-empty';
+      empty.textContent = 'no audio files on this page';
+      list.appendChild(empty);
+    } else {
+      node.files.forEach(function (f) {
+        const row = document.createElement('div');
+        row.className = 'np-file';
+
+        const name = document.createElement('span');
+        name.textContent = f.name;
+        name.title = f.url;
+
+        const play = document.createElement('button');
+        play.type = 'button';
+        play.className = 'mini';
+        play.textContent = 'play';
+        play.addEventListener('click', function () { playFile(f, null); });
+
+        row.appendChild(name);
+        row.appendChild(play);
+        list.appendChild(row);
+      });
+    }
+
+    popupEl.appendChild(list);
+    popupEl.hidden = false;
+    positionPopup();
+  }
+
+  function positionPopup() {
+    if (popupEl.hidden || !selectedUrl) return;
+    const node = pageNodes.get(selectedUrl);
+    if (!node || node.x === undefined) return;
+
+    const b = mapSvg.clientLeft || 0;
+    const sx = b + node.x * view.scale + view.tx;
+    const sy = b + node.y * view.scale + view.ty;
+
+    const W = mapWrap.clientWidth, H = mapWrap.clientHeight;
+    const pw = popupEl.offsetWidth, ph = popupEl.offsetHeight;
+
+    let left = sx + 14;
+    if (left + pw > W - 6) left = sx - pw - 14;
+    left = Math.max(6, Math.min(left, W - pw - 6));
+
+    let top = sy - ph / 2;
+    top = Math.max(6, Math.min(top, H - ph - 6));
+
+    popupEl.style.left = left + 'px';
+    popupEl.style.top = top + 'px';
+  }
+
+  // -------- pan / zoom / pinch --------
+
+  const pointers = new Map();
+  let drag = null, pinch = null;
+
+  mapSvg.addEventListener('pointerdown', function (e) {
+    if (e.button !== 0) return;
+    if (!mapSvg.setPointerCapture) return;
+    mapSvg.setPointerCapture(e.pointerId);
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+    if (pointers.size === 1) {
+      const nodeEl = e.target.closest ? e.target.closest('.node') : null;
+      drag = {
+        x: e.clientX, y: e.clientY,
+        tx: view.tx, ty: view.ty,
+        moved: false,
+        url: nodeEl ? nodeEl.getAttribute('data-url') : null
+      };
+      pinch = null;
+    } else if (pointers.size === 2) {
+      const pts = Array.from(pointers.values());
+      const a = toLocal(pts[0].x, pts[0].y);
+      const b = toLocal(pts[1].x, pts[1].y);
+      const dist = Math.hypot(a.x - b.x, a.y - b.y) || 1;
+      const cx = (a.x + b.x) / 2, cy = (a.y + b.y) / 2;
+      pinch = {
+        dist: dist,
+        scale: view.scale,
+        wx: (cx - view.tx) / view.scale,
+        wy: (cy - view.ty) / view.scale
+      };
+      drag = null;
+    }
+  });
+
+  mapSvg.addEventListener('pointermove', function (e) {
+    if (!pointers.has(e.pointerId)) return;
+    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    const pts = Array.from(pointers.values());
+
+    if (pinch && pts.length >= 2) {
+      const a = toLocal(pts[0].x, pts[0].y);
+      const b = toLocal(pts[1].x, pts[1].y);
+      const dist = Math.hypot(a.x - b.x, a.y - b.y) || 1;
+      const cx = (a.x + b.x) / 2, cy = (a.y + b.y) / 2;
+      const k = clamp(pinch.scale * (dist / pinch.dist), 0.25, 6);
+      view.scale = k;
+      view.tx = cx - pinch.wx * k;
+      view.ty = cy - pinch.wy * k;
+      applyTransform();
+      return;
+    }
+
+    if (drag) {
+      const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+      if (!drag.moved && Math.hypot(dx, dy) > 4) drag.moved = true;
+      if (drag.moved) {
+        view.tx = drag.tx + dx;
+        view.ty = drag.ty + dy;
+        applyTransform();
+      }
+    }
+  });
+
+  function endPointer(e, cancelled) {
+    if (!pointers.has(e.pointerId)) return;
+    pointers.delete(e.pointerId);
+    try { mapSvg.releasePointerCapture(e.pointerId); } catch (_) {}
+
+    if (pointers.size < 2) pinch = null;
+
+    if (pointers.size === 1) {
+      const p = Array.from(pointers.values())[0];
+      drag = { x: p.x, y: p.y, tx: view.tx, ty: view.ty, moved: true, url: null };
+      return;
+    }
+
+    if (pointers.size === 0) {
+      if (drag && !drag.moved && !cancelled) selectNode(drag.url);
+      drag = null;
+    }
+  }
+
+  mapSvg.addEventListener('pointerup', function (e) { endPointer(e, false); });
+  mapSvg.addEventListener('pointercancel', function (e) { endPointer(e, true); });
+
+  mapSvg.addEventListener('wheel', function (e) {
+    e.preventDefault();
+    const p = toLocal(e.clientX, e.clientY);
+    const factor = Math.exp(-e.deltaY * 0.0015);
+    const k = clamp(view.scale * factor, 0.25, 6);
+    view.tx = p.x - (p.x - view.tx) * (k / view.scale);
+    view.ty = p.y - (p.y - view.ty) * (k / view.scale);
+    view.scale = k;
+    applyTransform();
+  }, { passive: false });
+
+  // -------- drawing --------
 
   function drawMap() {
     const rect = mapSvg.getBoundingClientRect();
@@ -603,6 +750,7 @@
     const W = rect.width, H = rect.height;
     mapSvg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
     mapSvg.innerHTML = '';
+    viewportEl = null;
 
     const NS = 'http://www.w3.org/2000/svg';
     function make(name, attrs) {
@@ -619,13 +767,15 @@
       });
       t.textContent = 'start a crawl to see the map';
       mapSvg.appendChild(t);
+      selectedUrl = null;
+      popupEl.hidden = true;
       return;
     }
 
     const cx = W / 2, cy = H / 2;
     const maxDepth = Math.max(...nodes.map(n => n.depth), 0);
 
-    // 1. Initial radial layout
+    // 1. Initial radial layout (only applies to newly added nodes)
     const rings = Array.from({ length: maxDepth + 1 }, () => []);
     nodes.forEach(n => rings[n.depth].push(n));
     rings.forEach(ring => ring.sort((a, b) => (a.source || '').localeCompare(b.source || '')));
@@ -636,20 +786,23 @@
       ring.forEach((node, i) => {
         if (node.x === undefined) {
           if (depth === 0) {
-            node.x = cx; node.y = cy;
+            node.x = cx;
+            node.y = cy;
           } else {
             const angle = (i / n) * Math.PI * 2 - Math.PI / 2;
             node.x = cx + Math.cos(angle) * r;
             node.y = cy + Math.sin(angle) * r;
           }
-          node.vx = 0; node.vy = 0;
+          node.vx = 0;
+          node.vy = 0;
         }
       });
     });
 
-    // 2. Force simulation
+    // 2. Force simulation to resolve overlaps
     const iterations = 100;
     const k = Math.sqrt((W * H) / Math.max(nodes.length, 1)) * 0.8;
+
     const nodeMap = new Map(nodes.map(n => [n.url, n]));
     const validEdges = [];
     nodes.forEach(node => {
@@ -659,242 +812,177 @@
     });
 
     for (let iter = 0; iter < iterations; iter++) {
+      // Repulsion
       for (let j = 0; j < nodes.length; j++) {
         const n1 = nodes[j];
         for (let l = j + 1; l < nodes.length; l++) {
           const n2 = nodes[l];
-          let dx = n2.x - n1.x; let dy = n2.y - n1.y;
+          let dx = n2.x - n1.x;
+          let dy = n2.y - n1.y;
           let distSq = dx * dx + dy * dy;
           if (distSq < 1) distSq = 1;
-          
+
           if (distSq < (k * 2) ** 2) {
             let dist = Math.sqrt(distSq);
             let force = (k * k) / distSq;
-            if (n1.depth === 0) { n2.vx += (dx/dist)*force*2; n2.vy += (dy/dist)*force*2; }
-            else if (n2.depth === 0) { n1.vx -= (dx/dist)*force*2; n1.vy -= (dy/dist)*force*2; }
-            else {
-              n1.vx -= (dx/dist)*force; n1.vy -= (dy/dist)*force;
-              n2.vx += (dx/dist)*force; n2.vy += (dy/dist)*force;
+
+            if (n1.depth === 0) {
+              n2.vx += (dx / dist) * force * 2;
+              n2.vy += (dy / dist) * force * 2;
+            } else if (n2.depth === 0) {
+              n1.vx -= (dx / dist) * force * 2;
+              n1.vy -= (dy / dist) * force * 2;
+            } else {
+              n1.vx -= (dx / dist) * force;
+              n1.vy -= (dy / dist) * force;
+              n2.vx += (dx / dist) * force;
+              n2.vy += (dy / dist) * force;
             }
           }
         }
       }
 
+      // Spring attraction
       validEdges.forEach(e => {
-        let dx = e.target.x - e.source.x; let dy = e.target.y - e.source.y;
-        let dist = Math.sqrt(dx*dx + dy*dy) || 1;
+        let dx = e.target.x - e.source.x;
+        let dy = e.target.y - e.source.y;
+        let dist = Math.sqrt(dx * dx + dy * dy) || 1;
         let force = (dist - k) * 0.05;
-        let fx = (dx/dist)*force; let fy = (dy/dist)*force;
+        let fx = (dx / dist) * force;
+        let fy = (dy / dist) * force;
+
         if (e.source.depth !== 0) { e.source.vx += fx; e.source.vy += fy; }
         if (e.target.depth !== 0) { e.target.vx -= fx; e.target.vy -= fy; }
       });
 
+      // Gravity towards center
       nodes.forEach(n => {
         if (n.depth === 0) return;
-        n.vx += (cx - n.x) * 0.02;
-        n.vy += (cy - n.y) * 0.02;
+        let dx = cx - n.x;
+        let dy = cy - n.y;
+        n.vx += dx * 0.02;
+        n.vy += dy * 0.02;
       });
 
+      // Update positions
       nodes.forEach(n => {
         if (n.depth === 0) return;
-        n.vx *= 0.5; n.vy *= 0.5;
-        n.x += n.vx; n.y += n.vy;
-        n.x = Math.max(40, Math.min(W - 40, n.x));
-        n.y = Math.max(40, Math.min(H - 40, n.y));
+
+        n.vx *= 0.5;
+        n.vy *= 0.5;
+        n.x += n.vx;
+        n.y += n.vy;
+
+        const pad = 50;
+        n.x = Math.max(pad, Math.min(W - pad, n.x));
+        n.y = Math.max(pad, Math.min(H - pad, n.y));
       });
     }
 
-    // Build Viewport Group
-    const viewport = make('g', { id: 'map-viewport' });
-    mapSvg.appendChild(viewport);
+    // viewport group (everything inside it pans / zooms)
+    viewportEl = make('g', {});
+    mapSvg.appendChild(viewportEl);
 
-    // Draw edges
+    // Edges
     validEdges.forEach(e => {
-      viewport.appendChild(make('line', {
-        class: 'edge',
+      viewportEl.appendChild(make('line', {
         x1: e.source.x, y1: e.source.y, x2: e.target.x, y2: e.target.y,
-        stroke: '#d9d9d9', 'stroke-width': 1
+        'class': 'edge',
+        'data-source': e.source.url,
+        'data-target': e.target.url
       }));
     });
 
-    // Draw nodes
+    // Nodes
     nodes.forEach(node => {
       const isRoot = node.depth === 0;
-      const hasFiles = node.files > 0;
-      // Nodes half size
+      const fc = node.files.length;
+      const hasFiles = fc > 0;
+
+      // radii halved for a cleaner look
       const r = isRoot ? 6 : (hasFiles ? 3.5 : 2.25);
       const fill = isRoot ? '#ff3b00' : (hasFiles ? '#fff2ee' : '#fff');
       const stroke = isRoot ? 'none' : (hasFiles ? '#ff3b00' : '#111');
-      const strokeW = isRoot ? 0 : (hasFiles ? 2 : 1.5);
+      const strokeW = isRoot ? 0 : (hasFiles ? 1.5 : 1);
 
-      const circle = make('circle', {
-        class: 'node-circle',
-        cx: node.x, cy: node.y, r: r, fill: fill, stroke: stroke, 'stroke-width': strokeW
-      });
-      circle.style.pointerEvents = 'all';
-      circle.addEventListener('click', (e) => {
-        e.stopPropagation();
-        selectNode(node);
-      });
-      viewport.appendChild(circle);
+      const g = make('g', { 'class': 'node', 'data-url': node.url });
+
+      // invisible hit area so tiny nodes are still easy to click
+      g.appendChild(make('circle', {
+        cx: node.x, cy: node.y, r: Math.max(10, r * 2.5), fill: 'transparent'
+      }));
+
+      g.appendChild(make('circle', {
+        'class': 'dot', cx: node.x, cy: node.y, r: r,
+        fill: fill, stroke: stroke, 'stroke-width': strokeW
+      }));
 
       let label = node.path;
       if (label === '/') label = isRoot ? 'ORIGIN' : '/ (Home)';
       if (label.length > 16) label = label.substring(0, 14) + '...';
 
-      const dx = node.x - cx; const dy = node.y - cy;
-      const dist = Math.sqrt(dx*dx + dy*dy);
+      const dx = node.x - cx;
+      const dy = node.y - cy;
+      const distFromCenter = Math.sqrt(dx * dx + dy * dy);
 
-      let textX = node.x, textY = node.y + (isRoot ? 14 : 10), textAnchor = 'middle';
+      let textX = node.x;
+      let textY = node.y + (isRoot ? 18 : 12);
+      let textAnchor = 'middle';
 
-      if (!isRoot && dist > 20) {
+      if (!isRoot && distFromCenter > 20) {
         if (Math.abs(dy) > Math.abs(dx)) {
-          if (dy > 0) textY = node.y + 12;
-          else textY = node.y - 6;
+          if (dy > 0) { textY = node.y + 13; }
+          else { textY = node.y - 8; }
         } else {
-          if (dx > 0) { textX = node.x + 8; textAnchor = 'start'; textY = node.y + 3; }
-          else { textX = node.x - 8; textAnchor = 'end'; textY = node.y + 3; }
+          if (dx > 0) { textX = node.x + 9; textAnchor = 'start'; textY = node.y + 3; }
+          else { textX = node.x - 9; textAnchor = 'end'; textY = node.y + 3; }
         }
       }
 
+      const title = make('title');
+      title.textContent = node.url + (hasFiles ? ' (' + fc + ' audio file' + (fc > 1 ? 's' : '') + ')' : '');
+      g.appendChild(title);
+
       const text = make('text', {
-        class: 'node-text',
         x: textX, y: textY, 'text-anchor': textAnchor,
         'font-family': 'ui-monospace, monospace',
-        'font-size': isRoot ? 10 : 8,
+        'font-size': isRoot ? 11 : 9,
         'font-weight': isRoot ? 700 : 400,
         fill: isRoot ? '#111' : (hasFiles ? '#b3261e' : '#767676')
       });
       text.textContent = label;
-      viewport.appendChild(text);
+      g.appendChild(text);
+
+      viewportEl.appendChild(g);
     });
 
-    // Legend (outside viewport so it stays fixed)
+    // Legend (fixed — outside the zoomable viewport)
     const legend = make('g', { transform: 'translate(16, 16)' });
-    legend.appendChild(make('circle', { cx: 4, cy: 4, r: 4, fill: '#ff3b00' }));
-    const t1 = make('text', { x: 12, y: 8, 'font-family': 'ui-monospace, monospace', 'font-size': 10, fill: '#111' });
-    t1.textContent = 'Start'; legend.appendChild(t1);
-    legend.appendChild(make('circle', { cx: 4, cy: 20, r: 2.25, fill: '#fff', stroke: '#111', 'stroke-width': 1.5 }));
-    const t2 = make('text', { x: 12, y: 24, 'font-family': 'ui-monospace, monospace', 'font-size': 10, fill: '#111' });
-    t2.textContent = 'Page'; legend.appendChild(t2);
-    legend.appendChild(make('circle', { cx: 4, cy: 36, r: 3.5, fill: '#fff2ee', stroke: '#ff3b00', 'stroke-width': 2 }));
-    const t3 = make('text', { x: 12, y: 40, 'font-family': 'ui-monospace, monospace', 'font-size': 10, fill: '#b3261e' });
-    t3.textContent = 'Audio'; legend.appendChild(t3);
+
+    legend.appendChild(make('circle', { cx: 6, cy: 6, r: 5, fill: '#ff3b00' }));
+    const t1 = make('text', { x: 18, y: 10, 'font-family': 'ui-monospace, monospace', 'font-size': 11, fill: '#111' });
+    t1.textContent = 'Start Page';
+    legend.appendChild(t1);
+
+    legend.appendChild(make('circle', { cx: 6, cy: 26, r: 3, fill: '#fff', stroke: '#111', 'stroke-width': 1 }));
+    const t2 = make('text', { x: 18, y: 30, 'font-family': 'ui-monospace, monospace', 'font-size': 11, fill: '#111' });
+    t2.textContent = 'Crawled Page';
+    legend.appendChild(t2);
+
+    legend.appendChild(make('circle', { cx: 6, cy: 46, r: 4.5, fill: '#fff2ee', stroke: '#ff3b00', 'stroke-width': 1.5 }));
+    const t3 = make('text', { x: 18, y: 50, 'font-family': 'ui-monospace, monospace', 'font-size': 11, fill: '#b3261e' });
+    t3.textContent = 'Page with Audio';
+    legend.appendChild(t3);
+
+    const hint = make('text', { x: 0, y: 76, 'font-family': 'ui-monospace, monospace', 'font-size': 10, fill: '#aaa' });
+    hint.textContent = 'drag · scroll / pinch · click node';
+    legend.appendChild(hint);
+
     mapSvg.appendChild(legend);
 
-    // Restore transform & highlights
     applyTransform();
-    applyHighlights();
-    
-    // Close sidebar on map background click
-    mapSvg.addEventListener('click', function() {
-       sidebar.classList.remove('open');
-       selectedNodeUrl = null;
-       applyHighlights();
-    });
-  }
-
-  function selectNode(node) {
-    selectedNodeUrl = node.url;
-    
-    // Populate sidebar
-    sidebarTitle.textContent = node.path === '/' ? node.url : node.path;
-    sidebarFiles.innerHTML = '';
-    
-    if (node.fileList.length === 0) {
-      sidebarFiles.innerHTML = '<div style="color:var(--muted); font-size:12px;">No audio files found on this page.</div>';
-    } else {
-      node.fileList.forEach(f => {
-        const div = document.createElement('div');
-        div.className = 'file-item';
-        
-        const name = document.createElement('div');
-        name.className = 'file-name';
-        name.textContent = f.name;
-        
-        const acts = document.createElement('div');
-        acts.className = 'file-actions';
-        
-        const play = document.createElement('button');
-        play.textContent = 'play';
-        play.onclick = () => playFile(f, null);
-        
-        const dl = document.createElement('button');
-        dl.textContent = 'download';
-        dl.onclick = () => downloadFile(f);
-        
-        acts.appendChild(play);
-        acts.appendChild(dl);
-        div.appendChild(name);
-        div.appendChild(acts);
-        sidebarFiles.appendChild(div);
-      });
-    }
-    
-    sidebar.classList.add('open');
-    applyHighlights();
-  }
-
-  function applyHighlights() {
-    const viewport = mapSvg.querySelector('#map-viewport');
-    if (!viewport) return;
-    
-    const circles = viewport.querySelectorAll('.node-circle');
-    const texts = viewport.querySelectorAll('.node-text');
-    const edges = viewport.querySelectorAll('.edge');
-
-    // Reset everything
-    circles.forEach(el => el.classList.remove('dimmed', 'highlighted', 'selected-node'));
-    texts.forEach(el => el.classList.remove('dimmed', 'highlighted'));
-    edges.forEach(el => el.classList.remove('dimmed', 'highlighted-edge'));
-
-    if (!selectedNodeUrl) return; // No selection, stop here
-
-    // Find path to origin
-    const pathUrls = new Set();
-    let current = pageNodes.get(selectedNodeUrl);
-    while (current) {
-      pathUrls.add(current.url);
-      current = current.source ? pageNodes.get(current.source) : null;
-    }
-
-    // Dim nodes and highlight path nodes
-    circles.forEach((el, i) => {
-      const node = Array.from(pageNodes.values())[i]; // Assumes order matches drawing
-      // Fallback: identify by cx/cy
-      const nodeData = Array.from(pageNodes.values()).find(n => n.x == el.getAttribute('cx') && n.y == el.getAttribute('cy'));
-      
-      if (nodeData && pathUrls.has(nodeData.url)) {
-        el.classList.add('highlighted');
-        if (nodeData.url === selectedNodeUrl) el.classList.add('selected-node');
-      } else {
-        el.classList.add('dimmed');
-      }
-    });
-
-    texts.forEach(el => {
-      // Use node matching via label text roughly or skip text dimming if too complex
-      if (el.textContent === 'ORIGIN' || el.textContent.includes(selectedNodeUrl.split('/').pop())) {
-        el.classList.add('highlighted');
-      } else {
-        el.classList.add('dimmed');
-      }
-    });
-
-    edges.forEach(el => {
-      // Check if edge source/target connects two nodes in path
-      let x1 = parseFloat(el.getAttribute('x1')), y1 = parseFloat(el.getAttribute('y1'));
-      let x2 = parseFloat(el.getAttribute('x2')), y2 = parseFloat(el.getAttribute('y2'));
-      
-      const n1 = Array.from(pageNodes.values()).find(n => Math.abs(n.x - x1) < 1 && Math.abs(n.y - y1) < 1);
-      const n2 = Array.from(pageNodes.values()).find(n => Math.abs(n.x - x2) < 1 && Math.abs(n.y - y2) < 1);
-
-      if (n1 && n2 && pathUrls.has(n1.url) && pathUrls.has(n2.url)) {
-        el.classList.add('highlighted-edge');
-      } else {
-        el.classList.add('dimmed');
-      }
-    });
+    updateHighlight();
+    if (selectedUrl && pageNodes.has(selectedUrl)) showPopup(pageNodes.get(selectedUrl));
   }
 })();
 </script>
