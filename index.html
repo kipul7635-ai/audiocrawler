@@ -106,6 +106,7 @@
     min-height:400px;
     background:#fafafa;
     border:1px solid var(--soft);
+    overflow:hidden;
   }
 
   #player{
@@ -195,7 +196,7 @@
   let finished = false, pageCount = 0, fileCount = 0, errCount = 0, rowCount = 0;
 
   let originUrl = '';
-  const pageNodes = new Map(); // url -> { url, path, host, depth, source, files }
+  const pageNodes = new Map();
 
   form.addEventListener('submit', function (e) { e.preventDefault(); begin(); });
   stopBtn.addEventListener('click', function () { stop('stopped'); });
@@ -316,7 +317,6 @@
       pageCount++;
       if (m.status === 'ok') {
         addLog('ok', 'ok    ' + m.url + (m.links != null ? '   (' + m.links + ' links)' : ''));
-        // Populate the map graph
         try {
           const u = new URL(m.url);
           pageNodes.set(m.url, {
@@ -335,7 +335,6 @@
       }
       setStatus('scanning — ' + pageCount + ' pages · ' + fileCount + ' files');
     } else if (m.type === 'file') {
-      // Increment the file count on the page node where the file was found
       if (pageNodes.has(m.file.page)) {
         pageNodes.get(m.file.page).files++;
         if (panels.map.classList.contains('active')) requestAnimationFrame(drawMap);
@@ -437,7 +436,7 @@
     tr.style.display = tr.dataset.search.indexOf(q) === -1 ? 'none' : '';
   }
 
-  // ---------------- map (radial tree) ----------------
+  // ---------------- map (force-directed graph) ----------------
 
   function drawMap() {
     const rect = mapSvg.getBoundingClientRect();
@@ -464,72 +463,163 @@
       return;
     }
 
-    const maxDepth = Math.max(...nodes.map(n => n.depth), 0);
     const cx = W / 2, cy = H / 2;
-    const maxR = Math.min(W, H) / 2 - 50;
-    const step = maxR / Math.max(1, maxDepth);
+    const maxDepth = Math.max(...nodes.map(n => n.depth), 0);
 
-    // Group nodes by depth
+    // 1. Initial radial layout (only applies to newly added nodes)
     const rings = Array.from({ length: maxDepth + 1 }, () => []);
-    nodes.forEach(n => {
-      if (n.depth <= maxDepth) rings[n.depth].push(n);
-    });
-
-    // Sort siblings by source so lines don't tangle
+    nodes.forEach(n => rings[n.depth].push(n));
     rings.forEach(ring => ring.sort((a, b) => (a.source || '').localeCompare(b.source || '')));
 
-    const positions = new Map();
-
-    // Calculate coordinates
     rings.forEach((ring, depth) => {
-      const r = depth * step;
       const n = ring.length;
+      const r = (Math.min(W, H) / 2.5) * (depth / (maxDepth || 1));
       ring.forEach((node, i) => {
-        let x = cx, y = cy;
-        if (n > 0) {
-          const angle = (i / n) * Math.PI * 2 - Math.PI / 2;
-          x = cx + Math.cos(angle) * r;
-          y = cy + Math.sin(angle) * r;
+        if (node.x === undefined) {
+          if (depth === 0) {
+            node.x = cx;
+            node.y = cy;
+          } else {
+            const angle = (i / n) * Math.PI * 2 - Math.PI / 2;
+            node.x = cx + Math.cos(angle) * r;
+            node.y = cy + Math.sin(angle) * r;
+          }
+          node.vx = 0;
+          node.vy = 0;
         }
-        positions.set(node.url, { x, y });
       });
     });
 
-    // Draw connecting lines (edges)
+    // 2. Force simulation to resolve overlaps
+    const iterations = 100;
+    const k = Math.sqrt((W * H) / Math.max(nodes.length, 1)) * 0.8;
+
+    const nodeMap = new Map(nodes.map(n => [n.url, n]));
+    const validEdges = [];
     nodes.forEach(node => {
-      if (node.depth === 0) return;
-      const srcPos = positions.get(node.source) || { x: cx, y: cy };
-      const dstPos = positions.get(node.url);
-      if (srcPos && dstPos) {
-        mapSvg.appendChild(make('line', {
-          x1: srcPos.x, y1: srcPos.y, x2: dstPos.x, y2: dstPos.y,
-          stroke: '#d9d9d9', 'stroke-width': 1
-        }));
+      if (node.source && nodeMap.has(node.source)) {
+        validEdges.push({ source: nodeMap.get(node.source), target: node });
       }
     });
 
-    // Draw the nodes (pages)
-    nodes.forEach(node => {
-      const pos = positions.get(node.url);
-      if (!pos) return;
+    // Run physics simulation
+    for (let iter = 0; iter < iterations; iter++) {
+      // Repulsion
+      for (let j = 0; j < nodes.length; j++) {
+        const n1 = nodes[j];
+        for (let l = j + 1; l < nodes.length; l++) {
+          const n2 = nodes[l];
+          let dx = n2.x - n1.x;
+          let dy = n2.y - n1.y;
+          let distSq = dx * dx + dy * dy;
+          if (distSq < 1) distSq = 1;
+          
+          if (distSq < (k * 2) ** 2) {
+            let dist = Math.sqrt(distSq);
+            let force = (k * k) / distSq;
+            
+            if (n1.depth === 0) {
+              n2.vx += (dx / dist) * force * 2;
+              n2.vy += (dy / dist) * force * 2;
+            } else if (n2.depth === 0) {
+              n1.vx -= (dx / dist) * force * 2;
+              n1.vy -= (dy / dist) * force * 2;
+            } else {
+              n1.vx -= (dx / dist) * force;
+              n1.vy -= (dy / dist) * force;
+              n2.vx += (dx / dist) * force;
+              n2.vy += (dy / dist) * force;
+            }
+          }
+        }
+      }
 
+      // Spring attraction (keeps connected nodes close)
+      validEdges.forEach(e => {
+        let dx = e.target.x - e.source.x;
+        let dy = e.target.y - e.source.y;
+        let dist = Math.sqrt(dx * dx + dy * dy) || 1;
+        let force = (dist - k) * 0.05;
+        let fx = (dx / dist) * force;
+        let fy = (dy / dist) * force;
+        
+        if (e.source.depth !== 0) { e.source.vx += fx; e.source.vy += fy; }
+        if (e.target.depth !== 0) { e.target.vx -= fx; e.target.vy -= fy; }
+      });
+
+      // Gravity towards center
+      nodes.forEach(n => {
+        if (n.depth === 0) return;
+        let dx = cx - n.x;
+        let dy = cy - n.y;
+        n.vx += dx * 0.02;
+        n.vy += dy * 0.02;
+      });
+
+      // Update positions
+      nodes.forEach(n => {
+        if (n.depth === 0) return;
+        
+        n.vx *= 0.5;
+        n.vy *= 0.5;
+        n.x += n.vx;
+        n.y += n.vy;
+        
+        // Keep in bounds
+        const pad = 50; 
+        n.x = Math.max(pad, Math.min(W - pad, n.x));
+        n.y = Math.max(pad, Math.min(H - pad, n.y));
+      });
+    }
+
+    // Draw edges
+    validEdges.forEach(e => {
+      mapSvg.appendChild(make('line', {
+        x1: e.source.x, y1: e.source.y, x2: e.target.x, y2: e.target.y,
+        stroke: '#d9d9d9', 'stroke-width': 1
+      }));
+    });
+
+    // Draw nodes
+    nodes.forEach(node => {
       const isRoot = node.depth === 0;
       const hasFiles = node.files > 0;
-      const r = isRoot ? 12 : (hasFiles ? 8 : 5);
+      const r = isRoot ? 12 : (hasFiles ? 7 : 4.5);
       const fill = isRoot ? '#ff3b00' : (hasFiles ? '#fff2ee' : '#fff');
       const stroke = isRoot ? 'none' : (hasFiles ? '#ff3b00' : '#111');
       const strokeW = isRoot ? 0 : (hasFiles ? 2 : 1.5);
 
       mapSvg.appendChild(make('circle', {
-        cx: pos.x, cy: pos.y, r: r, fill: fill, stroke: stroke, 'stroke-width': strokeW
+        cx: node.x, cy: node.y, r: r, fill: fill, stroke: stroke, 'stroke-width': strokeW
       }));
 
-      // Label text (e.g. /site1 or ROOT)
-      let label = node.path === '/' ? 'ROOT' : node.path;
-      if (label.length > 15) label = label.substring(0, 13) + '...';
+      let label = node.path;
+      if (label === '/') {
+        label = isRoot ? 'ORIGIN' : '/ (Home)';
+      }
+      if (label.length > 16) label = label.substring(0, 14) + '...';
+
+      // Smart label positioning (radiates outwards)
+      const dx = node.x - cx;
+      const dy = node.y - cy;
+      const distFromCenter = Math.sqrt(dx*dx + dy*dy);
+
+      let textX = node.x;
+      let textY = node.y + (isRoot ? 26 : 18);
+      let textAnchor = 'middle';
+
+      if (!isRoot && distFromCenter > 20) {
+        if (Math.abs(dy) > Math.abs(dx)) {
+          if (dy > 0) { textY = node.y + 20; } // bottom
+          else { textY = node.y - 12; } // top
+        } else {
+          if (dx > 0) { textX = node.x + 12; textAnchor = 'start'; textY = node.y + 4; } // right
+          else { textX = node.x - 12; textAnchor = 'end'; textY = node.y + 4; } // left
+        }
+      }
 
       const text = make('text', {
-        x: pos.x, y: pos.y + (isRoot ? 26 : 20), 'text-anchor': 'middle',
+        x: textX, y: textY, 'text-anchor': textAnchor,
         'font-family': 'ui-monospace, monospace',
         'font-size': isRoot ? 12 : 10,
         'font-weight': isRoot ? 700 : 400,
@@ -537,7 +627,6 @@
       });
       text.textContent = label;
 
-      // Tooltip on hover
       const title = make('title');
       title.textContent = node.url + (hasFiles ? ` (${node.files} audio files)` : '');
       text.appendChild(title);
@@ -553,12 +642,12 @@
     t1.textContent = 'Start Page';
     legend.appendChild(t1);
 
-    legend.appendChild(make('circle', { cx: 6, cy: 26, r: 5, fill: '#fff', stroke: '#111', 'stroke-width': 1.5 }));
+    legend.appendChild(make('circle', { cx: 6, cy: 26, r: 4.5, fill: '#fff', stroke: '#111', 'stroke-width': 1.5 }));
     const t2 = make('text', { x: 18, y: 30, 'font-family': 'ui-monospace, monospace', 'font-size': 11, fill: '#111' });
     t2.textContent = 'Crawled Page';
     legend.appendChild(t2);
 
-    legend.appendChild(make('circle', { cx: 6, cy: 46, r: 6, fill: '#fff2ee', stroke: '#ff3b00', 'stroke-width': 2 }));
+    legend.appendChild(make('circle', { cx: 6, cy: 46, r: 7, fill: '#fff2ee', stroke: '#ff3b00', 'stroke-width': 2 }));
     const t3 = make('text', { x: 18, y: 50, 'font-family': 'ui-monospace, monospace', 'font-size': 11, fill: '#b3261e' });
     t3.textContent = 'Page with Audio';
     legend.appendChild(t3);
